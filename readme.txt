@@ -26,6 +26,36 @@ Ferramentas Auxiliares
 apt-get install build-essential libusb-1.0 libusb-1.0-0-dev
 sudo apt-get install smstools
 
+Instalação Interface Web
+========================
+A interface web permite enviar SMS pela interface de internet.
+Não temos a intenção de desenvolver um aplicativo, porem é um modelo para que outros
+aprimorem e desenvolvam esta aplicação.
+
+Requisitos da Interface Web
+===========================
+1) Apache 2 com Mysql
+2) PHP 5 ou 7
+3) Phpmyadmin - recomendado mas não necessário
+
+Procedimentos de instalação Interface Web
+=========================================
+Copie os arquivos da pasta html do projeto para a pasta /var/www/html.
+Dê permissão:
+> chmod 555 -R /var/www/html/ws 
+> chmod 555 -R /var/www/html/SMS
+
+Edite o arquivo connectdb.php:
+> vim /var/www/html/ws/connectdb.php
+
+Inclua os parametros do banco de dados, como senha, usuario, database name.
+
+Pronto!
+Entre no browser, abra e selecione o IP do servidor apache, no meu caso:
+localhost/SMS/Envia_SMS.php
+
+
+
 English
 =======
 This software is open source, GPL 3.
@@ -53,3 +83,32 @@ Follow the procedure below:
 Auxiliary Tools
 > apt-get install build-essential libusb-1.0 libusb-1.0-0-dev
 > sudo apt-get install smstools
+
+
+Web Interface Installation
+========================
+The web interface allows you to send SMS through the internet interface.
+We do not intend to develop an application, but it is a template for others to
+improve and develop this application.
+
+Web Interface Requirements
+===========================
+1) Apache 2 with Mysql
+2) PHP 5 or 7
+3) Phpmyadmin - recommended but not required
+
+Installation Procedures Web Interface
+===========================================
+Copy the files from the html folder of the project to the / var / www / html folder.
+Give permission:
+> chmod 555 -R / var / www / html / ws
+> chmod 555 -R / var / www / html / SMS
+
+Edit the connectdb.php file:
+> vim /var/www/html/ws/connectdb.php
+
+Include the database parameters, such as password, user, database name.
+
+Ready!
+Enter the browser, open and select the IP of the apache server, in my case:
+localhost / SMS / Send_SMS.php
