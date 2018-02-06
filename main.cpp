@@ -1,5 +1,7 @@
 /** Servidor de Envio de SMS
 ** Criado por Marcelo Maurin Martins\n
+** marcelomaurinmartins@gmail.com
+** whatsapp +55 16981434112
 **/
 
 #include <stdio.h>    /* Standard input/output definitions */
@@ -62,10 +64,10 @@ bool flgOldMovimentoStatus;
 bool flgLuzManual;
 bool flgOldLuzManual;
  
-char localdb[80] = "192.168.1.211"; //ip or localhost mysql server
-char userdb[80] = "root"; //user database
-char passdb[80] = ""; //password database
-char aliasdb[80] = "sosconsultadb"; //database mysql
+char localdb[80] = "hostdatabase";
+char userdb[80] = "userdatabase";
+char passdb[80] = "password";
+char aliasdb[80] = "databasename";
 char SQLCMD[500];
 
 /**Campos de JOB**/
@@ -73,18 +75,8 @@ int job_id = 0;
 char job_telefone[30];
 char job_mensagem[500];
 
-
-//char device[30] = "/dev/ttyUSB3";
-char device[30] = "/dev/ttyS0"; //Device SMS , try minicom
-
-
-//Registra LogOcorrencia de funcionalidade
-/*
-void LogOcorrencia(char *Info)
-{
- printf("Log:%s\n",Info); 
-}
-*/
+//Device USB modem, please check your
+char device[30] = "/dev/ttyUSB2";
 
 
 int kbhit(void)
@@ -225,6 +217,7 @@ int OpenQuery(char *SQLCMD)
 
     while ((row = mysql_fetch_row(result)))
     {
+
         for( cont = 0; cont < num_fields; cont++)
         {
             printf("%s ", row[cont] ? row[cont] : "NULL");
@@ -256,9 +249,9 @@ int	EnviaSMS(int job_id, char *job_telefone, char *job_mensagem)
     int rc,n;  
 
   	//Envia Comandos Texto
-	printf("SMS para %s\n",job_telefone);
+	printf("SMS para %s\n");
     sprintf(dat,"AT+CMGS=\"%s\"\r\n",job_telefone);
-	printf("env:%s\n",dat);
+	//printf("env:%s\n",dat);
 	//AT+CMGS='+16981434112'
     //Envia cmd
     rc = serialport_write(fd, dat);
@@ -270,9 +263,10 @@ int	EnviaSMS(int job_id, char *job_telefone, char *job_mensagem)
     rc = serialport_write(fd, dat);
     n = serialport_read_cmd(fd, buf);
 	printf("rec:%s\n",buf);
-    printf("%s\n",buf);
-	if (strstr(buf,"ERROR")>=0)
+    
+	if (strstr(buf,"ERROR")>0)
 	{
+		printf("Erro na comunicacao:%s\n",buf);
 		return -1;
 	}
 	return 0;
@@ -285,13 +279,20 @@ int InicializaModem()
     //printf("Escrevendo comando releoff\n");
     int rc,n;
 	
+	printf("Configurando ASCII\n");
+    sprintf(dat,"AT\r\n");
+    //Envia cmd
+    rc = serialport_write(fd, dat);
+	n = serialport_read_until(fd, dat,'\n');
+	printf("rec:%s\n",dat);
+	
 	//Envia Comandos Texto
 	printf("Configurando ASCII\n");
-    sprintf(dat,"AT+CMGF=1\r\n");
+    sprintf(dat,"at+cmgf=1\r\n");
     //Envia cmd
     rc = serialport_write(fd, dat);
     n = serialport_read_cmd(fd, buf);
-    printf("%s\n",buf);
+    printf("teste1:%s\n",buf);
 	if (strstr(buf,"ERROR")>0)
 	{
 		return -1;
@@ -389,11 +390,6 @@ int main(int argc, char *argv[])
 
     fd = 0;
 
-    //char serialport[256];
-
-    //int baudrate = B9600;  // default
-    //int baudrate = B19200;
-	
 	int baudrate = B9600;
     baudrate = 9600; //Velocidade padrao do modem GSM
 
@@ -407,30 +403,27 @@ int main(int argc, char *argv[])
 
     printf("Inicializando Modem...\n");
     if (InicializaModem()==0)
+	//if(0==0)
 	{
-
 		printf("Iniciando Serviço de Monitoramento de Solicitações.\n");
-
-
 		printf("Para sair do programa pressione esc\n");
-		
 
 		//serialport_clear(fd);
 		while (controle==true)
 		{     
 			sleep(1);
-		
 			
 			if( BuscaJobs() ==1)
 			{
-			
+				//Executou buscajobs
 			}	  
-			
+			/*	
 			if (AguardaEsc() == true)
 			{
 				controle = false;
 				break;
 			}
+			*/
 			
 			sleep(1);
 			//printf("Limpa Serial\n");
@@ -449,9 +442,9 @@ int main(int argc, char *argv[])
 } // end main
 
 
-
 int serialport_writebyte( int fd, uint8_t b)
 {
+	
     int n = write(fd,&b,1);
     if( n!=1)
         return -1;
@@ -460,7 +453,7 @@ int serialport_writebyte( int fd, uint8_t b)
 
 int serialport_write(int fd, const char* str)
 {
-    //printf("Escrevendo bytes %s",str);
+    printf("Escrevendo bytes %s",str);
     int len = strlen(str);
     int n = write(fd, str, len);
     if( n!=len )
@@ -481,6 +474,8 @@ int serialport_read_cmd(int fd, char* buf)
 	   if ((strstr(info,"+CSQ:")>=0) || (strstr(info,"+RSSI:")>=0))
 	    {
 		  //Parametro de Sinal do Celular deve ignorar   
+		  printf("Ignorou linha!\n");
+		  
 		}
 		else
 		{
@@ -488,8 +483,10 @@ int serialport_read_cmd(int fd, char* buf)
 			sprintf(buf,"%s%s",buf,info);	
 		}
 	}  
-	while ((strstr(buf,"OK")<=0) and (strstr(buf,"ERROR")<=0));
-	//printf("%s\n",buf);
+	while ((strstr(buf,"OK")<0) and (strstr(buf,"ERROR")<0));
+	//while ((strstr(info,"OK")<=0) and (strstr(info,"ERROR")<=0));
+	//printf("buffer in:%s\n",buf);
+	return 0;
     
 }
 
@@ -499,7 +496,9 @@ int serialport_read_until(int fd, char* buf, char until)
     //printf("capturando informacoes da porta...");
     char b[1];
     int i=0;
+	int cont = 0;
     do {
+		cont++; //incrementador de espera
         int n = read(fd, b, 1);  // read a char at a time
         //printf("%c",b);
         if( n==-1) return -1;    // couldn't read
@@ -507,11 +506,14 @@ int serialport_read_until(int fd, char* buf, char until)
             usleep( 10 * 1000 ); // wait 10 msec try again
             continue;
         }
+		//printf("byte:%c",b[0]);
         buf[i] = b[0];
         i++;
         //} while( strcmp(buf,until)!=0 );
-    } while( b[0] != until );
+    } while( (b[0] != until )&&(cont<5));
+	//} while (b[0] != until );
     buf[i] = 0;  // null terminate the string
+	//printf("Saiu:%s\n",buf);
     return i;
 }
 
