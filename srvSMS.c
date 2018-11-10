@@ -249,7 +249,7 @@ int	EnviaSMS(int job_id, char *job_telefone, char *job_mensagem)
     int rc,n;  
 
   	//Envia Comandos Texto
-	printf("SMS para %s\n");
+	printf("SMS para %s\n",job_telefone);
     sprintf(dat,"AT+CMGS=\"%s\"\r\n",job_telefone);
 	//printf("env:%s\n",dat);
 	//AT+CMGS='+16981434112'
@@ -465,7 +465,7 @@ int serialport_write(int fd, const char* str)
 int serialport_read_cmd(int fd, char* buf)
 {
 	int n = 0;
-	sprintf(buf,'\0');
+	sprintf(buf," ");
 	char info[500];
 	//char buf[200];
 	do
