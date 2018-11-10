@@ -1,4 +1,4 @@
-use [your_data_base_name];
+use srvSMSdb;
 
 CREATE TABLE IF NOT EXISTS `jobs` (
   `idjob` int(10) unsigned NOT NULL AUTO_INCREMENT,

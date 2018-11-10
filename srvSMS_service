@@ -1,0 +1,35 @@
+#!/bin/bash
+#
+# /etc/init.d/srvSMS
+
+SMS_DAEMON="srvSMS"
+COMMAND="/usr/local/bin/$SMS_DAEMON"
+
+case "$1" in
+	start)
+		"$COMMAND"
+		echo "srvSMS daemon started"
+		;;
+	stop)
+		killall "$SMS_DAEMON"
+		echo "srvSMS daemon stopped"
+		;;
+	restart|force-reload)
+		killall "$SMS_DAEMON"
+		echo "srvSMS daemon stopped"
+		"$COMMAND "
+		echo "srvSMS daemon started"
+		;;
+	status)
+		if ps -C "$SMS_DAEMON" > /dev/null; then
+			echo "srvSMS daemon is running"
+		else
+			echo "srvSMS daemon is not runnig"
+		fi
+		;;
+	*)
+		echo "Usage:$0 {start|stop|restart|force-reload|status}"
+		;;
+	esac
+
+
