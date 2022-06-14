@@ -6,8 +6,8 @@ MYSQLLIBS= -L/usr/lib/mysql -lmysqlclient  -lpthread -lz -lm -lrt -ldl
 
 # Inclua aqui o usuario e senha do banco de dados #
 HOST="maurinsoft.com.br"
-USER="mmm"
-PASSWORD="226468"
+USER="usuario"
+PASSWORD="senha"
 
 #Inclua aqui o caminho da pasta apache2
 SITE="/var/www/html/"
