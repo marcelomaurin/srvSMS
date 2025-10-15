@@ -64,7 +64,120 @@ O componente `srvSMS.c` gerencia a integração direta com o banco MySQL e o SMS
 
 8. ✅ Pronto!
 
----
+3) Configuração – /etc/SMS/sms.cfg
+
+Na primeira execução, o srvSMS cria o arquivo com defaults. Edite conforme seu ambiente.
+
+Formato:
+
+INICIO: 07:00
+FIM: 20:00
+SEGUNDA: 1
+TERCA: 1
+QUARTA: 1
+QUINTA: 1
+SEXTA: 1
+SABADO: 1
+DOMINGO: 1
+MODO: A
+LOCALDB:
+USERDB:
+PASSDB:
+ALIASDB:
+
+
+Campos obrigatórios:
+
+LOCALDB / USERDB / PASSDB / ALIASDB → conexão MySQL (host/usuário/senha/banco).
+
+MODO:
+
+A = Aplicação (mostra logs na tela e grava em /var/log/SMS/…)
+
+S = Daemon (silencioso: redireciona stdout/err para o log diário)
+
+Janela de envio: INICIO/FIM (hh:mm) + dias (0/1).
+
+Segurança (recomendado):
+
+sudo chown root:root /etc/SMS/sms.cfg
+sudo chmod 600 /etc/SMS/sms.cfg
+
+4) Overrides por Variáveis de Ambiente
+
+Têm prioridade sobre o arquivo de config:
+
+SMS_LOCALDB, SMS_USERDB, SMS_PASSDB, SMS_ALIASDB
+
+Forçar modo: SMS_FORCE_MODO=S (ou A)
+
+Exemplo:
+
+sudo env SMS_LOCALDB=localhost \
+         SMS_USERDB=smsuser \
+         SMS_PASSDB='senha' \
+         SMS_ALIASDB=SMSdb \
+         SMS_FORCE_MODO=S \
+         /usr/local/bin/srvSMS
+
+5) Execução
+# modo manual (mostra ajuda das opções)
+./srvSMS -h   # (se implementado) ou rode com -d/-b/-m conforme abaixo
+
+# selecionar porta e baud
+./srvSMS -d /dev/ttyUSB0 -b 9600 -m A   # força MODO=A via CLI
+
+
+Prioridade do MODO: CLI -m > ENV SMS_FORCE_MODO > MODO do sms.cfg.
+
+6) Serviço (SysV init)
+
+Instalação já cria /etc/init.d/srvSMS. Comandos típicos:
+
+sudo service srvSMS start
+sudo service srvSMS status
+sudo service srvSMS stop
+
+
+Ao rodar como serviço, prefira MODO: S no config (silencioso).
+Os logs ficam sempre em /var/log/SMS/YYYY-MM-DD.log.
+
+🔁 Hot-Reload de Configuração
+
+O srvSMS monitora o mtime de /etc/SMS/sms.cfg.
+Ao detectar mudança, ele:
+
+Recarrega a config (janela/dias/DB/MODO);
+
+Reaplica o MODO imediatamente:
+
+se mudar para S, para de escrever no terminal e passa a redirecionar tudo ao log diário;
+
+se mudar para A, volta a escrever no terminal e no log.
+
+Loga mensagens como:
+
+Config recarregada (MODO=S) e log reconfigurado.
+
+
+🔁 Hot-Reload de Configuração
+
+O srvSMS monitora o mtime de /etc/SMS/sms.cfg.
+Ao detectar mudança, ele:
+
+Recarrega a config (janela/dias/DB/MODO);
+
+Reaplica o MODO imediatamente:
+
+se mudar para S, para de escrever no terminal e passa a redirecionar tudo ao log diário;
+
+se mudar para A, volta a escrever no terminal e no log.
+
+Loga mensagens como:
+
+Config recarregada (MODO=S) e log reconfigurado.
+
+
 
 ## 🌐 Instalação – Servidor TCP Python (`servidor_sms.py`)
 

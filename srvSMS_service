@@ -1,35 +1,106 @@
-#!/bin/bash
-#
-# /etc/init.d/srvSMS
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          srvSMS
+# Required-Start:    $remote_fs $syslog $network
+# Required-Stop:     $remote_fs $syslog $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Servidor de envio de SMS (Maurinsoft)
+# Description:       Daemon que lê a fila (MySQL) e envia SMS via modem GSM
+### END INIT INFO
 
-SMS_DAEMON="srvSMS"
-COMMAND="/usr/local/bin/$SMS_DAEMON"
+NAME="srvSMS"
+DAEMON="/usr/local/bin/${NAME}"
+PIDFILE="/var/run/${NAME}.pid"
+LOGFILE="/var/log/${NAME}.log"
+USER="root"              # ajuste se preferir rodar como outro usuário
+CFG="/etc/SMS/sms.cfg"   # opcional: só para validar existência
+
+# Opções do daemon (se precisar passar -d /dev/ttyUSB0 -b 115200, etc)
+DAEMON_OPTS=""
+
+. /lib/lsb/init-functions
+
+do_start() {
+    if [ ! -x "$DAEMON" ]; then
+        log_failure_msg "$DAEMON não encontrado ou não executável"
+        return 2
+    fi
+    if [ ! -f "$CFG" ]; then
+        log_warning_msg "Config $CFG não encontrado (seguindo defaults do binário)"
+    fi
+
+    # Cria diretórios de runtime/log
+    mkdir -p "$(dirname "$PIDFILE")" || true
+    mkdir -p "$(dirname "$LOGFILE")" || true
+    touch "$LOGFILE" && chown "$USER":"$USER" "$LOGFILE" || true
+
+    # Já está rodando?
+    if start-stop-daemon --status --pidfile "$PIDFILE" >/dev/null 2>&1; then
+        log_success_msg "$NAME já está em execução."
+        return 0
+    fi
+
+    # Sobe em background, redirecionando logs
+    start-stop-daemon --start --quiet \
+        --background \
+        --make-pidfile --pidfile "$PIDFILE" \
+        --chuid "$USER" \
+        --exec "$DAEMON" -- $DAEMON_OPTS \
+        >> "$LOGFILE" 2>&1
+
+    ret=$?
+    if [ $ret -eq 0 ]; then
+        log_success_msg "$NAME iniciado."
+    else
+        log_failure_msg "Falha ao iniciar $NAME (código $ret)"
+    fi
+    return $ret
+}
+
+do_stop() {
+    if start-stop-daemon --status --pidfile "$PIDFILE" >/dev/null 2>&1; then
+        start-stop-daemon --stop --quiet --pidfile "$PIDFILE" --retry=TERM/10/KILL/5
+        ret=$?
+        [ -f "$PIDFILE" ] && rm -f "$PIDFILE"
+        if [ $ret -eq 0 ]; then
+            log_success_msg "$NAME parado."
+        else
+            log_failure_msg "Falha ao parar $NAME (código $ret)"
+        fi
+        return $ret
+    else
+        log_warning_msg "$NAME não está em execução."
+        [ -f "$PIDFILE" ] && rm -f "$PIDFILE"
+        return 0
+    fi
+}
+
+do_status() {
+    if start-stop-daemon --status --pidfile "$PIDFILE" >/dev/null 2>&1; then
+        PID=$(cat "$PIDFILE" 2>/dev/null || true)
+        if [ -n "$PID" ]; then
+            echo "$NAME está rodando (pid $PID)"
+        else
+            echo "$NAME está rodando"
+        fi
+        return 0
+    else
+        echo "$NAME não está rodando"
+        return 3
+    fi
+}
 
 case "$1" in
-	start)
-		"$COMMAND"
-		echo "srvSMS daemon started"
-		;;
-	stop)
-		killall "$SMS_DAEMON"
-		echo "srvSMS daemon stopped"
-		;;
-	restart|force-reload)
-		killall "$SMS_DAEMON"
-		echo "srvSMS daemon stopped"
-		"$COMMAND "
-		echo "srvSMS daemon started"
-		;;
-	status)
-		if ps -C "$SMS_DAEMON" > /dev/null; then
-			echo "srvSMS daemon is running"
-		else
-			echo "srvSMS daemon is not runnig"
-		fi
-		;;
-	*)
-		echo "Usage:$0 {start|stop|restart|force-reload|status}"
-		;;
-	esac
+    start)   do_start ;;
+    stop)    do_stop ;;
+    restart) do_stop; sleep 1; do_start ;;
+    force-reload) do_stop; sleep 1; do_start ;;
+    status)  do_status ;;
+    *)
+        echo "Uso: $0 {start|stop|restart|force-reload|status}"
+        exit 2
+        ;;
+esac
 
-
+exit $?
