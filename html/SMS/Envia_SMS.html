@@ -1,218 +1,339 @@
-<html>
-	<header>
-		<title>Envio de SMS Gratu�to</title>
-		<script src="https://ajax.googleapis.com/ajax/libs/angularjs/1.5.6/angular.min.js"></script>
-		<!-- Latest compiled and minified CSS -->
-		<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
+﻿<!doctype html>
+<html lang="pt-br" ng-app="Envia_SMS">
+<head>
+  <meta charset="utf-8">
+  <title>Envio de SMS Gratuito</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
 
-		<!-- jQuery library -->
-		<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+  <!-- AngularJS 1.5.6 -->
+  <script src="https://ajax.googleapis.com/ajax/libs/angularjs/1.5.6/angular.min.js"></script>
 
-		<!-- Latest compiled JavaScript -->
-		<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js"></script>
-		
-	</header>
-	<body>
-	    
-		<div ng-app="Envia_SMS" ng-controller="cntrl" >
-			<div class="container-fluid bg-1 text-rigth">
-				<form>
-					<?  Pesquisar Itens ?>
-					<div class="jumbotron">
-							<h1> CRUD de Envio de SMS </h1>
-							<p>Apresenta��o de Conhecimento utilizando AngularJS e PHP</p>
-							<p>Esta tela tem o intuito de apresentar informa��es sobre meu perfil</p>
-							<p>Para maiores informa��es marcelomaurinmartins@gmail.com</p>
-					</div>
-					<div class="row">
-						<div class="col-sm-1">Telefone:</div>
-						<div class="col-sm-4"><input class="form-control" placeholder="Telefone (opcional)" type="text" ng-model="ptelefone" name="ptelefone"></div>					
-						<div class="col-sm-1"> <input type="button" class="btn btn-primary"  value="Pesquisar" ng-click="displayJob(ptelefone)" > </div> 
-						<div class="col-sm-1">  </div> 
-						<div class="col-sm-1"> <input type="button" class="btn btn-primary"  value="Novo Item" ng-click="newJob(ptelefone)" > </div> 
-					
-					</div>
-					
-					
-					<? Retorno de mensagem de erro ?>
-					<div class="info">
-						<div class="control-label">Alerta:</div>
-						<div class="info">{{msg}}</div>
-					</div>
-				</form>
-			</div>
-			<? layout da tabela de resposta ?>
-			<div class="container-fluid bg-1 text-rigth">
-				
-				<? **Cadastrar itens** ?>
-				<div id="cadastro" ng-style="disableInsert" >
-					<div class="row">
-						<div class="col-sm-12"> <h3>Opera��o Insert registro </h3></div>	
-					</div>
-					<div class="row">
-						<div class="col-sm-1 control-label"> Telefone: </div>
-						<div class="col-sm-4"> <input class="form-control" placeholder="Telefone que ser� enviado" type="text" ng-model="telefone" name="telefone"> </div>
-					</div>
-					<div class="row">
-						<div class="col-sm-1 control-label"> Mensagem: </div>
-						<div class="col-sm-4"> <input  class="form-control" placeholder="Mensagem a enviar" type="text" ng-model="mensagem" name="mensagem"> </div>	
-					</div>
-					<div class="row">
-						<div class="col-sm-4"></div>
-						<div class="col-sm-1 control-label">  </div> 
-						<div> <input type="button" class="btn btn-primary" value="submit" ng-click="insertJob()" > </div> 					
-					</div>
-				</div>
-			</div>
-			
-			<div class="container-fluid bg-1 text-rigth">
-				
-				<? *** Update *** ?>
-				<div id="edicao" ng-style="disableUpdate" class="container-fluid bg-1 text-rigth">
-					<div class="row">
-						<div class="col-sm-12"> <h3>Operacao de Edicao</h3></div>
-					</div>
-					<div class="row">
-						<div class="col-sm-1 control-label"> Id:</div><div> {{edidjob}}</div>
-					</div>
-					<div class="row">
-						<div class="col-sm-1 control-label"> Telefone</div>
-						<div class="col-sm-4"> <input class="form-control"  type="text" ng-model="edtelefone" name="edtelefone"></div>
-					</div>
-					<div class="row">
-						<div class="col-sm-1 control-label"> Mensagem: </div>
-						<div class="col-sm-4"> <input class="form-control"  type="text" ng-model="edmensagem" name="edmensagem"></div>						
-					</div>
-					<div class="row">
-						<div class="col-sm-4"></div>
-						<div class="col-sm-1"> <button class="btn btn-primary" ng-click="updateJob(edidjob,edtelefone, edmensagem)">Atualizar</button></div>
-					</div>
-				</div>
-			</div>
-			
-			<div class="container-fluid bg-1 text-rigth">
-				<div class="row">
-				<hr>
-				</div>
-			</div>
-				
-			<? ** Tela de Resultado **?>
-			<div class="container-fluid bg-1 text-rigth">
-				<table class="table table-striped">
-					<thead>
-						<tr>
-							<th>Id</th>
-							<th>Telefone</th>
-							<th>Mensagem</th>
-							<th>Status</th>						
-						<tr>
-					</thead>
-					<tbody>
-						<tr ng-repeat="sms in data">
-							<td>{{sms.idjob}}</td>
-							<td>{{sms.telefone}}</td>
-							<td>{{sms.mensagem}}</td>
-							<td>{{sms.status}}</td>
-							<td><button class="btn btn-primary" ng-click="deleteJob(sms.idjob);">Delete</button></td>
-							<td><button class="btn btn-primary" ng-click="HabilitaEdicao(sms);">Edit</button></td>
-						</tr>
-					</tbody>
-				</table>
-				
-				
-			</div>
+  <!-- Bootstrap 3 -->
+  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
 
-			
-			
-			<? *** Controler *** ?>
-			<script>
-				var app = angular.module('Envia_SMS',[]);
-				app.controller('cntrl', function($scope,$http)
-				{
-				    $scope.disableUpdate = {'display': 'none'}; //Atribui Edicao invisivel
-					$scope.disableInsert = {'display': 'none'}; //Atribui Edicao invisivel
-					
-					//Mostra  os Jobs				
-					$scope.insertJob=function()
-					{
-						$http.post("/ws/iJobSMS.php",{'telefone':$scope.telefone, 'mensagem':$scope.mensagem, 'status': $scope.status})
-						.success(function()
-						{
-							$scope.msg = "SMS foi programado com sucesso";
-							$scope.displayJob();
-						})
-					}
+  <!-- jQuery (necessário pro Bootstrap JS) -->
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+  <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js"></script>
 
-					$scope.displayJob=function(pTelefone)
-					{
-					    $scope.disableUpdate = {'display': 'none'}; //Atribui Edicao invisivel
-						$scope.disableInsert = {'display': 'none'}; //Atribui Edicao invisivel
-						if (typeof pTelefone == "undefined") 
-						{
-							pTelefone = "";
-						}	
+  <style>
+    body { padding-top: 10px; }
+    .section-title { margin: 20px 0 10px; }
+    .table td { vertical-align: middle !important; }
+    .modal-dialog { max-width: 800px; width: 95%; }
+  </style>
+</head>
+<body ng-controller="cntrl" ng-init="displayJob('')">
 
-						var params = {"telefone": pTelefone };
-						var config = {params: params};
-						
-						
-						$http.get("/ws/sJobSMS.php",config)
-						.success(function(data)
-						{
-							$scope.data = data;
-							$scope.msg = "Tela Atualizada!";
-						})
-						.error(function()
-						{
-							$scope.msg = "Pesquisa retornou vazia";
-							$scope.data = null;
-						}) 
-					}
-					
-					$scope.deleteJob=function(idjob)
-					{
-						$http.post("/ws/dJobSMS.php",{'id':idjob})
-						.success(function()
-						{					
-							$scope.displayJob();
-							$scope.msg = "Registro excluido!";
-						})
-					}
-					
-					//Mostra  os Jobs				
-					$scope.newJob=function()
-					{
-						$scope.disableInsert = {'display': 'block'}; 
-						$scope.disableUpdate = {'display': 'none'}; 
-						$scope.edidjob = "";
-						$scope.edtelefone = "";
-						$scope.edmensagem = "";
-					}					
-					
-					$scope.HabilitaEdicao=function(sms)
-					{
-						$scope.disableUpdate = {'display': 'block'}; 
-						$scope.edidjob = sms.idjob;
-						$scope.edtelefone = sms.telefone;
-						$scope.edmensagem = sms.mensagem;						
-					}
-					
-					
-					$scope.updateJob=function(edidjob, edtelefone, edmensagem)
-					{
-						$http.post("/ws/uJobSMS.php",{'idjob':edidjob,'telefone':edtelefone, 'mensagem':edmensagem})
-						.success(function()
-						{					
-							$scope.displayJob();
-							$scope.msg = "Registro excluido!";
-							
-							$scope.disableUpdate = {'display': 'none'}; 
-							$scope.DisplayJob();
-						})
-					}
+  <!-- Menu Superior -->
+  <div class="container-fluid bg-1 text-rigth" style="padding-top:10px;">
+    <div class="row">
+      <div class="col-sm-12 text-center">
+        <div class="btn-group">
+          <button type="button" class="btn btn-default" ng-click="irMenu()">Menu Principal</button>
+          <button type="button" class="btn btn-primary" ng-click="irEnvio()">Envia SMS</button>
+          <button type="button" class="btn btn-default" ng-click="irRelatorios()">Relatórios</button>
+          <button type="button" class="btn btn-default" ng-click="emConstrucao()">Configurações (em breve)</button>
+        </div>
+      </div>
+    </div>
+    <hr>
+  </div>
 
-				});
-			</script>
-		</div>
-	</body>
+  <div class="container">
+
+    <!-- Cabeçalho -->
+    <div class="jumbotron">
+      <h1>CRUD de Envio de SMS</h1>
+      <p>Apresentação de conhecimento utilizando AngularJS e PHP</p>
+      <p>Contato: <a href="mailto:marcelomaurinmartins@gmail.com">marcelomaurinmartins@gmail.com</a></p>
+    </div>
+
+    <!-- Filtro e ações -->
+    <form class="form-horizontal" ng-submit="displayJob(ptelefone)">
+      <div class="row">
+        <div class="col-sm-1"><label class="control-label">Telefone:</label></div>
+        <div class="col-sm-4">
+          <input class="form-control" placeholder="Telefone (opcional)" type="text" ng-model="ptelefone" name="ptelefone">
+        </div>
+        <div class="col-sm-2">
+          <button type="submit" class="btn btn-primary btn-block">Pesquisar</button>
+        </div>
+        <div class="col-sm-2">
+          <button type="button" class="btn btn-success btn-block" ng-click="abrirModalInsert()">Novo Item</button>
+        </div>
+      </div>
+    </form>
+
+    <!-- Alertas -->
+    <div class="section-title"></div>
+    <div ng-if="msg" class="alert" ng-class="{'alert-info': msgType==='info', 'alert-success': msgType==='success', 'alert-danger': msgType==='error'}">
+      {{msg}}
+    </div>
+
+    <!-- Resultado -->
+    <div class="panel panel-default">
+      <div class="panel-heading"><strong>Resultados</strong></div>
+      <div class="table-responsive">
+        <table class="table table-striped">
+          <thead>
+          <tr>
+            <th>Id</th>
+            <th>Telefone</th>
+            <th>Mensagem</th>
+            <th>Status</th>
+            <th style="width: 220px;">Ações</th>
+          </tr>
+          </thead>
+          <tbody>
+          <tr ng-repeat="sms in data track by sms.idjob">
+            <td>{{sms.idjob}}</td>
+            <td>{{sms.telefone}}</td>
+            <td>{{sms.mensagem}}</td>
+            <td>{{sms.status}}</td>
+            <td>
+              <div class="btn-group">
+                <button class="btn btn-danger" ng-click="deleteJob(sms.idjob)">Excluir</button>
+                <button class="btn btn-primary" ng-click="abrirModalEdit(sms)">Editar</button>
+              </div>
+            </td>
+          </tr>
+          <tr ng-if="!data || data.length===0">
+            <td colspan="5" class="text-muted">Nenhum registro encontrado.</td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div> <!-- /container -->
+
+  <!-- ===================== MODAL: INSERIR REGISTRO ===================== -->
+  <div id="modalInsert" class="modal fade" tabindex="-1" role="dialog" aria-labelledby="tituloInsert">
+    <div class="modal-dialog" role="document">
+      <div class="modal-content">
+
+        <form class="form-horizontal" ng-submit="insertJob()">
+
+          <div class="modal-header">
+            <button type="button" class="close" ng-click="fecharModal('modalInsert')">&times;</button>
+            <h4 class="modal-title" id="tituloInsert">Operação: Inserir registro</h4>
+          </div>
+
+          <div class="modal-body">
+            <div class="form-group">
+              <label class="col-sm-3 control-label">Telefone</label>
+              <div class="col-sm-7">
+                <input class="form-control" placeholder="Telefone que será enviado" type="text" ng-model="telefone" name="telefone" required>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="col-sm-3 control-label">Mensagem</label>
+              <div class="col-sm-9">
+                <input class="form-control" placeholder="Mensagem a enviar" type="text" ng-model="mensagem" name="mensagem" required>
+              </div>
+            </div>
+
+            <!-- Agora envia 0/1/2 -->
+            <div class="form-group">
+              <label class="col-sm-3 control-label">Status</label>
+              <div class="col-sm-4">
+                <select class="form-control" ng-model="status" ng-init="status=0">
+                  <option value="0">Pendente</option>
+                  <option value="1">Enviado</option>
+                  <option value="2">Falhou</option>
+                </select>
+              </div>
+            </div>
+          </div> <!-- /modal-body -->
+
+          <div class="modal-footer">
+            <button type="button" class="btn btn-default" ng-click="fecharModal('modalInsert')">Cancelar</button>
+            <button type="submit" class="btn btn-primary">Gravar</button>
+          </div>
+
+        </form>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== MODAL: EDIÇÃO ===================== -->
+  <div id="modalEdit" class="modal fade" tabindex="-1" role="dialog" aria-labelledby="tituloEdit">
+    <div class="modal-dialog" role="document">
+      <div class="modal-content">
+
+        <form class="form-horizontal" ng-submit="updateJob(edidjob, edtelefone, edmensagem)">
+
+          <div class="modal-header">
+            <button type="button" class="close" ng-click="fecharModal('modalEdit')">&times;</button>
+            <h4 class="modal-title" id="tituloEdit">Operação: Edição</h4>
+          </div>
+
+          <div class="modal-body">
+            <div class="form-group">
+              <label class="col-sm-3 control-label">Id</label>
+              <div class="col-sm-3">
+                <p class="form-control-static">{{edidjob}}</p>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="col-sm-3 control-label">Telefone</label>
+              <div class="col-sm-7">
+                <input class="form-control" type="text" ng-model="edtelefone" name="edtelefone" required>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="col-sm-3 control-label">Mensagem</label>
+              <div class="col-sm-9">
+                <input class="form-control" type="text" ng-model="edmensagem" name="edmensagem" required>
+              </div>
+            </div>
+            <!-- Se quiser editar status também, adicione aqui outro select e ajuste o WS uJobSMS.php -->
+          </div> <!-- /modal-body -->
+
+          <div class="modal-footer">
+            <button type="button" class="btn btn-default" ng-click="fecharModal('modalEdit')">Cancelar</button>
+            <button type="submit" class="btn btn-primary">Atualizar</button>
+          </div>
+
+        </form>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Controller -->
+  <script>
+    (function() {
+      'use strict';
+
+      var app = angular.module('Envia_SMS', []);
+
+      app.controller('cntrl', function($scope, $http, $window, $httpParamSerializerJQLike) {
+
+        // Navegação do menu
+        $scope.irMenu = function() { $window.location.href = 'index.html'; };
+        $scope.irEnvio = function() { $window.location.href = 'Envia_SMS.html'; };
+        $scope.irRelatorios = function() { $window.location.href = 'Relatorios.php'; };
+        $scope.emConstrucao = function() { alert('Módulo em desenvolvimento 💻'); };
+
+        // Mensagens
+        $scope.msg = '';
+        $scope.msgType = 'info';
+        function setMsg(text, type) {
+          $scope.msg = text || '';
+          $scope.msgType = type || 'info';
+        }
+
+        // Helper POST (x-www-form-urlencoded)
+        function postForm(url, dataObj) {
+          return $http({
+            method: 'POST',
+            url: url,
+            data: $httpParamSerializerJQLike(dataObj || {}),
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+          });
+        }
+
+        // ================== MODAIS ==================
+        $scope.abrirModalInsert = function() {
+          $scope.telefone = '';
+          $scope.mensagem = '';
+          $scope.status = 0; // numérico
+          $('#modalInsert').modal('show');
+        };
+
+        $scope.abrirModalEdit = function(sms) {
+          if (!sms) return;
+          $scope.edidjob = sms.idjob;
+          $scope.edtelefone = sms.telefone;
+          $scope.edmensagem = sms.mensagem;
+          $('#modalEdit').modal('show');
+        };
+
+        $scope.fecharModal = function(modalId) {
+          $('#' + modalId).modal('hide');
+        };
+        // ============================================
+
+        // INSERT
+        $scope.insertJob = function() {
+          if (!$scope.telefone || !$scope.mensagem) {
+            setMsg('Informe telefone e mensagem.', 'error');
+            return;
+          }
+          var payload = {
+            telefone: ($scope.telefone || '').trim(),
+            mensagem: ($scope.mensagem || '').trim(),
+            status: parseInt($scope.status, 10) || 0 // 0/1/2
+          };
+
+          postForm('/ws/iJobSMS.php', payload)
+            .then(function(resp) {
+              setMsg('SMS programado com sucesso.', 'success');
+              $scope.fecharModal('modalInsert');
+              $scope.displayJob($scope.ptelefone);
+            }, function() {
+              setMsg('Falha ao inserir registro.', 'error');
+            });
+        };
+
+        // SELECT
+        $scope.displayJob = function(pTelefone) {
+          var params = { telefone: pTelefone || '' };
+          $http.get('/ws/sJobSMS.php', { params: params })
+            .then(function(resp) {
+              $scope.data = resp.data;
+              setMsg('Lista atualizada.', 'info');
+            }, function() {
+              $scope.data = [];
+              setMsg('Pesquisa retornou vazia.', 'error');
+            });
+        };
+
+        // DELETE
+        $scope.deleteJob = function(idjob) {
+          if (!idjob) return;
+          if (!confirm('Confirma a exclusão do registro ' + idjob + '?')) return;
+
+          postForm('/ws/dJobSMS.php', { id: idjob })
+            .then(function() {
+              setMsg('Registro excluído!', 'success');
+              $scope.displayJob($scope.ptelefone);
+            }, function() {
+              setMsg('Falha ao excluir registro.', 'error');
+            });
+        };
+
+        // UPDATE
+        $scope.updateJob = function(edidjob, edtelefone, edmensagem) {
+          if (!edidjob || !edtelefone || !edmensagem) {
+            setMsg('Id, telefone e mensagem são obrigatórios.', 'error');
+            return;
+          }
+          var payload = {
+            idjob: edidjob,
+            telefone: (edtelefone || '').trim(),
+            mensagem: (edmensagem || '').trim()
+          };
+
+          postForm('/ws/uJobSMS.php', payload)
+            .then(function() {
+              setMsg('Registro atualizado!', 'success');
+              $scope.fecharModal('modalEdit');
+              $scope.displayJob($scope.ptelefone);
+            }, function() {
+              setMsg('Falha ao atualizar registro.', 'error');
+            });
+        };
+
+      });
+
+      // ❌ Não declarar factory/serviço com o mesmo nome de $httpParamSerializerJQLike
+    })();
+  </script>
+</body>
 </html>

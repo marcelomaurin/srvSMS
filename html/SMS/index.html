@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="pt-br" ng-app="MenuSMS">
+<head>
+  <meta charset="utf-8">
+  <title>Menu Principal - SMS</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <!-- AngularJS -->
+  <script src="https://ajax.googleapis.com/ajax/libs/angularjs/1.5.6/angular.min.js"></script>
+
+  <!-- Bootstrap 3 -->
+  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+  <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js"></script>
+</head>
+<body ng-controller="MenuController">
+
+  <!-- Menu Superior (padrão do seu layout) -->
+  <div class="container-fluid bg-1 text-rigth" style="padding-top:10px;">
+    <div class="row">
+      <div class="col-sm-12 text-center">
+        <div class="btn-group">
+          <button type="button" class="btn btn-default" ng-click="irMenu()">Menu Principal</button>
+          <button type="button" class="btn btn-primary" ng-click="irEnvio()">Envia SMS</button>
+          <!-- ✅ Agora abre Relatorios.php -->
+          <button type="button" class="btn btn-default" ng-click="irRelatorios()">Relatórios</button>
+          <button type="button" class="btn btn-default" ng-click="emConstrucao()">Configurações (em breve)</button>
+        </div>
+      </div>
+    </div>
+    <hr>
+  </div>
+
+  <!-- Cabeçalho -->
+  <div class="container-fluid bg-1 text-rigth">
+    <div class="jumbotron">
+      <h1>Menu Principal do Sistema SMS</h1>
+      <p>Selecione a funcionalidade desejada abaixo</p>
+    </div>
+  </div>
+
+  <!-- Ações centrais -->
+  <div class="container-fluid bg-1 text-rigth">
+    <div class="row" style="margin-top:20px; margin-bottom:20px;">
+      <div class="col-sm-4 col-sm-offset-4 text-center">
+        <div class="row" style="margin-bottom:10px;">
+          <div class="col-sm-12">
+            <button type="button" class="btn btn-primary btn-block" ng-click="irEnvio()">
+              <span class="glyphicon glyphicon-envelope"></span> Envia SMS
+            </button>
+          </div>
+        </div>
+        <div class="row" style="margin-bottom:10px;">
+          <div class="col-sm-12">
+            <!-- ✅ Agora abre Relatorios.php -->
+            <button type="button" class="btn btn-default btn-block" ng-click="irRelatorios()">
+              <span class="glyphicon glyphicon-stats"></span> Relatórios
+            </button>
+          </div>
+        </div>
+        <div class="row">
+          <div class="col-sm-12">
+            <button type="button" class="btn btn-default btn-block" ng-click="emConstrucao()">
+              <span class="glyphicon glyphicon-cog"></span> Configurações (em breve)
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <hr>
+    <p class="text-center">
+      Para maiores informações: <strong>marcelomaurinmartins@gmail.com</strong>
+    </p>
+  </div>
+
+  <!-- Controller -->
+  <script>
+    (function(){
+      'use strict';
+      var app = angular.module('MenuSMS', []);
+      app.controller('MenuController', function($scope, $window){
+        $scope.irMenu = function(){ $window.location.href = 'index.html'; };
+        $scope.irEnvio = function(){ $window.location.href = 'Envia_SMS.html'; };
+        // ✅ Nova função para abrir Relatorios.php
+        $scope.irRelatorios = function(){ $window.location.href = 'Relatorios.php'; };
+        $scope.emConstrucao = function(){ alert('Módulo em desenvolvimento 💻'); };
+      });
+    })();
+  </script>
+
+</body>
+</html>
