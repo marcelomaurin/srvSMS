@@ -63,20 +63,8 @@
 </head>
 <body ng-controller="RelCtrl" ng-init="init()">
 
-  <!-- Menu Superior (mesmo padrão) -->
-  <div class="container-fluid bg-1 text-rigth top-bar">
-    <div class="row">
-      <div class="col-sm-12 text-center">
-        <div class="btn-group">
-          <button type="button" class="btn btn-default" ng-click="go('index.html')">Menu Principal</button>
-          <button type="button" class="btn btn-default" ng-click="go('Envia_SMS.html')">Envia SMS</button>
-          <button type="button" class="btn btn-primary">Relatórios</button>
-          <button type="button" class="btn btn-default" ng-click="emConstrucao()">Configurações (em breve)</button>
-        </div>
-      </div>
-    </div>
-    <hr>
-  </div>
+<?php include('./menu.php'); ?>
+
 
   <!-- Área principal em tela cheia (container-fluid) -->
   <div class="container-fluid">
@@ -190,6 +178,7 @@
       </div>
     </div>
   </div>
+  <?php include('botton.php'); ?>
 
   <script>
     (function(){
