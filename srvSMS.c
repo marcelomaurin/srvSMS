@@ -1,23 +1,24 @@
-/** Servidor de Envio de SMS
+/** Servidor de Envio de SMS (TEXT MODE)
 ** Criado por Marcelo Maurin Martins
-** Ajustes:
-** - Config /etc/SMS/sms.cfg (auto-criação; sem credenciais hardcoded)
-** - Lê credenciais do cfg com override por ENV (SMS_LOCALDB, SMS_USERDB, SMS_PASSDB, SMS_ALIASDB, SMS_SMSC)
-** - Valida configuração sem vazar segredos nos logs
-** - Janela de envio por dia/horário
-** - Inicialização do modem: exige OK em cada comando (fail-fast)
-** - Log diário em /var/log/SMS/YYYY-MM-DD.log com rotação à meia-noite
-** - MODO: S (daemon silencioso) / A (aplicação verbosa). Ambos mantêm log diário.
-** - Hot-reload da configuração (incl. MODO)
-** - Buffers e leitura serial robustos (sem overflow)
-** - Mensagens até 1000 chars (com '\0' garantido)
-** - Telefone normalizado para E.164 Brasil (+55...)
-** - EnsureSMSC: garante SMSC (AT+CSCA) via cfg/ENV
-** - BuscaJobs: sucesso -> status=1; qualquer erro -> status=9
-** - Tratamento de +CMS ERROR: e +ACMS ERROR: (PT-BR)
-** - INSERT automático em sms_log (modelo simples)
+**
+** Implementações/ajustes:
+** - Setup/Loop (Setup inicializa; Loop processa jobs)
+** - Testa "AT" simples antes de tudo (com tentativas)
+** - Sempre inicializa modem com comandos padrão (fail-fast)
+** - TEXT MODE: AT+CMGF=1, charset GSM: AT+CSCS="GSM"
+** - Opcional: AT+CSMP=17,167,0,0
+** - WaitNetworkRegistered via AT+CREG? (,1 ou ,5)
+** - EnsureSMSC robusto (detecta CSCA inválido/UCS2 e tenta setar com ",145")
+** - serialport_write_all garante escrita completa
+** - Logs diários + hot-reload de cfg
+** - Verbose: mostra comando executado e resposta bruta do modem
+** - Se falhar Setup, não inicia Loop e mostra motivo
+**
+** Observação:
+** Se o SIM/operadora não permitir SMS (dados-only/M2M), você pode ver +CMS ERROR 302/500.
 **/
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -36,23 +37,33 @@
 #include <sys/types.h>
 #include <stdarg.h>
 
-#define CTRL_Z 26
-#define READ_LINE_BUF 1024
-#define READ_CMD_BUF  8192
-#define PROMPT_TIMEOUT_MS 15000
-#define OK_TIMEOUT_MS      20000
-#define SHORT_TIMEOUT_MS    3000
+/* ===== Timings ===== */
+#define AT_GAP_MS             120
+#define AT_AFTER_CLEAR_MS      50
+#define CMGS_BEFORE_READ_MS   250
+#define SMS_TEXT_GAP_MS       120
+#define AFTER_CTRLZ_MS        150
 
+/* ===== Modem constants ===== */
+#define CTRL_Z 26
+
+/* ===== Buffers / timeouts ===== */
+#define READ_LINE_BUF       1024
+#define READ_CMD_BUF        8192
+#define PROMPT_TIMEOUT_MS  15000
+#define OK_TIMEOUT_MS      20000
+#define SHORT_TIMEOUT_MS    4000
+#define NETREG_TIMEOUT_MS  30000
+#define NETREG_POLL_MS       1000
+
+/* ===== Paths ===== */
 #define CFG_DIR  "/etc/SMS"
 #define CFG_PATH "/etc/SMS/sms.cfg"
 #define LOG_DIR  "/var/log/SMS"
 
-/* tamanho máximo aceito pela aplicação/banco para mensagens de envio */
+/* ===== Limits ===== */
 #define MAX_SMS_CHARS 1000
-/* tamanho para LOG.mensagem (tabela sms_log usa VARCHAR(500)) */
-#define MAX_LOG_MSG 500
 
-/* ===== Config ===== */
 typedef struct {
   int inicio_min;   // minutos desde 00:00
   int fim_min;      // minutos desde 00:00
@@ -61,43 +72,33 @@ typedef struct {
   char userdb[80];
   char passdb[80];
   char aliasdb[80];
-  char smsc[64];    // número do SMSC (ex: +551199501234)
-  char modo;        // 'S' (daemon) ou 'A' (aplicação)
+  char smsc[64];    // +551199...
+  char modo;        // 'S' ou 'A'
 } SMSConfig;
 
 /* ===== Globais ===== */
-MYSQL mycon;
-SMSConfig g_cfg;
+static MYSQL mycon;
+static SMSConfig g_cfg;
 
-int fd = -1;
-char g_tmpbuf[READ_CMD_BUF];
+static int  fd = -1;
+static char g_tmpbuf[READ_CMD_BUF];
 
-/* DB sem defaults no fonte (cfg/env apenas) */
-static char localdb[80] = "";
-static char userdb[80]  = "";
-static char passdb[80]  = "";
-static char aliasdb[80] = "";
+static char localdb[80]  = "";
+static char userdb[80]   = "";
+static char passdb[80]   = "";
+static char aliasdb[80]  = "";
 static char smsc_cfg[64] = "";
 
-char SQLCMD[512];
+static char SQLCMD[512];
 
-/* JOB */
-int  job_id = 0;
-char job_telefone[64];
-char job_mensagem[MAX_SMS_CHARS + 1];
-
-/* Porta serial */
-char device[64] = "/dev/ttyUSB0";
-
-/* Log diário */
 static FILE *g_log_fp = NULL;
 static int   g_log_yyyy = -1, g_log_mm = -1, g_log_dd = -1;
-/* Modo atual: 1=daemon (S), 0=aplicação (A) */
 static int   g_mode_daemon = 0;
-/* Hot-reload cfg */
 static time_t g_cfg_mtime = 0;
-/* Override via CLI (-m S|A) */
 static char   g_cli_modo  = 0;
+
+/* Porta serial */
+static char device[64] = "/dev/ttyUSB0";
 
 /* ===== Utils ===== */
 static void msleep(int ms) {
@@ -117,62 +118,11 @@ static int parse_hhmm(const char *txt) {
   if (h < 0 || h > 23 || m < 0 || m > 59) return -1;
   return h * 60 + m;
 }
-
 static int dir_exists(const char *path) { struct stat st; return (stat(path,&st)==0 && S_ISDIR(st.st_mode)); }
 static int file_exists(const char *path){ struct stat st; return (stat(path,&st)==0); }
+static time_t file_mtime(const char *path) { struct stat st; return (stat(path,&st)==0)?st.st_mtime:0; }
 
-/* ===== Protos ===== */
-/* Serial */
-static int serialport_init(const char* serialport, int baud);
-static int serialport_write(int fd, const char* str);
-static int serialport_write_raw(int fd, const uint8_t* data, size_t len);
-static int serialport_read_until(int fd, char* out, char until, int timeout_ms);
-static int serialport_read_cmd(int fd, char* out, int timeout_ms);
-static int serialport_clear(int fd);
-
-/* GSM */
-static int send_at_expect_ok(const char *cmd, int timeout_ms, const char *etapa);
-static int InicializaModem(void);
-static int EnviaSMS(int job_id, const char *job_telefone, const char *job_mensagem);
-
-/* MySQL */
-static int Mysqlcon(void);
-static bool ExecQuery(const char *SQLCMD);
-static int  BuscaJobs(void);
-static void Closecon(void);
-
-/* Config */
-static int write_default_config(void);
-static void set_cfg_defaults(SMSConfig *cfg);
-static int ensure_config(SMSConfig *cfg);
-static int load_config(SMSConfig *cfg);
-static void apply_db_from_cfg(const SMSConfig *cfg);
-static int now_in_window(const SMSConfig *cfg);
-
-/* Log diário + MODO */
-static int  dir_ensure(const char *path, mode_t mode);
-static void open_log_for_tm(const struct tm *tm, int redirect_streams);
-static void init_daily_log(void);
-static void maybe_rotate_daily_log(void);
-
-/* Hot-reload MODO/CFG */
-static time_t file_mtime(const char *path);
-static void reapply_logging_mode(void);
-static int reload_cfg_if_changed(void);
-
-/* Outros */
-static void Wellcome(void);
-
-/* SMSC + Telefone */
-static int EnsureSMSC(void);
-static int normalize_br_e164(const char *in, char *out, size_t outsz);
-
-/* ===== Tratamento de erros +CMS / +ACMS ===== */
-static const char* cms_reason_pt(int code);
-static const char* cms_hint_pt(int code);
-static int extract_cms_from_resp(const char *resp, int *code, char *which, size_t which_sz);
-
-/* ===== Logging: wrappers e macros ===== */
+/* ===== Logging (dup console + file) ===== */
 static int vdual_print(FILE *stream, const char *fmt, va_list ap) {
   int ret1 = 0, ret2 = 0;
   va_list ap1; va_copy(ap1, ap);
@@ -200,6 +150,51 @@ static int my_fprintf(FILE *stream, const char *fmt, ...) {
 }
 #define printf(...)  my_printf(__VA_ARGS__)
 #define fprintf(...) my_fprintf(__VA_ARGS__)
+
+/* ===== Protos ===== */
+static int serialport_init(const char* serialport, int baud);
+static int serialport_clear(int fd);
+static int serialport_write_all(int fd, const char* str);
+static int serialport_write_raw_all(int fd, const uint8_t* data, size_t len);
+static int serialport_read_until(int fd, char* out, char until, int timeout_ms);
+static int serialport_read_cmd(int fd, char* out, int timeout_ms);
+static int serialport_read_token(int fd, char *out, size_t outsz, int timeout_ms);
+
+static int write_default_config(void);
+static void set_cfg_defaults(SMSConfig *cfg);
+static int ensure_config(SMSConfig *cfg);
+static int load_config(SMSConfig *cfg);
+static void apply_db_from_cfg(const SMSConfig *cfg);
+static int now_in_window(const SMSConfig *cfg);
+
+static int  dir_ensure(const char *path, mode_t mode);
+static void open_log_for_tm(const struct tm *tm, int redirect_streams);
+static void init_daily_log(void);
+static void maybe_rotate_daily_log(void);
+static void reapply_logging_mode(void);
+static int  reload_cfg_if_changed(void);
+
+static int Mysqlcon(void);
+static bool ExecQuery(const char *SQL);
+static void Closecon(void);
+
+static const char* cms_reason_pt(int code);
+static const char* cms_hint_pt(int code);
+static int extract_cms_from_resp(const char *resp, int *code);
+
+static int send_at_expect_ok_verbose(const char *cmd, int timeout_ms, const char *etapa);
+
+static int WaitNetworkRegistered(int timeout_ms);
+static int InicializaModem(void);
+static int EnsureSMSC(void);
+static int normalize_br_e164(const char *in, char *out, size_t outsz);
+static int EnviaSMS(int job_id_param, const char *telefone_e164, const char *texto);
+static int BuscaJobs(void);
+
+static void Wellcome(void);
+
+static int Setup(int baud);
+static void Loop(void);
 
 /* ===== Config ===== */
 static int write_default_config(void) {
@@ -332,9 +327,6 @@ static void maybe_rotate_daily_log(void) {
     open_log_for_tm(&tm_now, redirect);
   }
 }
-
-/* ===== Hot-reload MODO/CFG ===== */
-static time_t file_mtime(const char *path) { struct stat st; return (stat(path,&st)==0)?st.st_mtime:0; }
 static void reapply_logging_mode(void) {
   time_t t=time(NULL); struct tm tm_now; localtime_r(&t,&tm_now);
   int redirect = g_mode_daemon ? 1 : 0;
@@ -368,12 +360,33 @@ static int reload_cfg_if_changed(void) {
 
 /* ===== Serial ===== */
 static int serialport_clear(int fd) { return tcflush(fd, TCIOFLUSH); }
-static int serialport_write(int fd, const char* str) {
-  size_t len=strlen(str); ssize_t n=write(fd,str,len); if(n<0||(size_t)n!=len) return -1; return (int)n;
+
+static int serialport_write_all(int fd, const char* str) {
+  size_t len=strlen(str);
+  size_t off=0;
+  while (off < len) {
+    ssize_t n = write(fd, str + off, len - off);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      return -1;
+    }
+    off += (size_t)n;
+  }
+  return (int)len;
 }
-static int serialport_write_raw(int fd, const uint8_t* data, size_t len) {
-  ssize_t n=write(fd,data,len); if(n<0||(size_t)n!=len) return -1; return (int)n;
+static int serialport_write_raw_all(int fd, const uint8_t* data, size_t len) {
+  size_t off=0;
+  while (off < len) {
+    ssize_t n = write(fd, data + off, len - off);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      return -1;
+    }
+    off += (size_t)n;
+  }
+  return (int)len;
 }
+
 static int serialport_read_until(int fd, char* out, char until, int timeout_ms) {
   int i = 0; out[0] = '\0';
   struct timeval start, now; gettimeofday(&start, NULL);
@@ -391,6 +404,7 @@ static int serialport_read_until(int fd, char* out, char until, int timeout_ms) 
     } else if (n == 0 || (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))) {
       msleep(10);
     } else if (n < 0) {
+      if (errno == EINTR) continue;
       return -1;
     }
 
@@ -402,16 +416,6 @@ static int serialport_read_until(int fd, char* out, char until, int timeout_ms) 
   return i;
 }
 
-/* concatenação segura (sem overflow) */
-static inline void safe_append(char *dst, size_t dst_cap, const char *src) {
-  size_t dst_len = strlen(dst);
-  if (dst_len >= dst_cap) return;
-  size_t cap = dst_cap - dst_len - 1; /* reserva 1 p/ '\0' */
-  if (cap == 0) return;
-  strncat(dst, src, cap);
-}
-
-/* Lê várias linhas até encontrar OK/ERROR/>, com timeout total */
 static int serialport_read_cmd(int fd, char* out, int timeout_ms) {
   size_t out_len = 0;
   out[0] = '\0';
@@ -425,24 +429,19 @@ static int serialport_read_cmd(int fd, char* out, int timeout_ms) {
       if (n >= (int)sizeof(line)) n = (int)sizeof(line) - 1;
       line[n] = '\0';
 
-      /* filtra ruídos */
-      int descartar = (strstr(line, "+CSQ:") || strstr(line, "+RSSI:")) ? 1 : 0;
-      if (!descartar) {
-        size_t free_cap = (READ_CMD_BUF - 1) - out_len;
-        size_t to_copy  = (n > 0 && (size_t)n < free_cap) ? (size_t)n : free_cap;
-        if (to_copy > 0) {
-          memcpy(out + out_len, line, to_copy);
-          out_len += to_copy;
-          out[out_len] = '\0';
-        } else {
-          return 0;
-        }
+      size_t free_cap = (READ_CMD_BUF - 1) - out_len;
+      size_t to_copy  = ((size_t)n < free_cap) ? (size_t)n : free_cap;
+      if (to_copy > 0) {
+        memcpy(out + out_len, line, to_copy);
+        out_len += to_copy;
+        out[out_len] = '\0';
+      } else {
+        return 0;
       }
 
       if (strstr(out, "OK") || strstr(out, "ERROR") || strstr(out, ">")) {
         return 0;
       }
-
       if (out_len > (READ_CMD_BUF - 64)) {
         return 0;
       }
@@ -453,15 +452,110 @@ static int serialport_read_cmd(int fd, char* out, int timeout_ms) {
       (long)(now.tv_sec - start.tv_sec) * 1000L +
       (long)(now.tv_usec - start.tv_usec) / 1000L;
 
-    if (elapsed_ms >= (long)timeout_ms) {
-      return -2;
-    }
-
+    if (elapsed_ms >= (long)timeout_ms) return -2;
     msleep(10);
   }
 }
 
-/* ===== GSM helpers: motivos/dicas (PT-BR) ===== */
+static int serialport_read_token(int fd, char *out, size_t outsz, int timeout_ms) {
+  size_t out_len = 0;
+  if (!out || outsz == 0) return -1;
+  out[0] = '\0';
+
+  struct timeval start, now;
+  gettimeofday(&start, NULL);
+
+  while (1) {
+    char b;
+    int n = read(fd, &b, 1);
+
+    if (n == 1) {
+      if (out_len < outsz - 1) {
+        out[out_len++] = b;
+        out[out_len] = '\0';
+      }
+
+      if (strchr(out, '>') != NULL) return 0;
+      if (strstr(out, "ERROR") != NULL) return 0;
+      if (strstr(out, "+CMS ERROR:") != NULL) return 0;
+      if (strstr(out, "+ACMS ERROR:") != NULL) return 0;
+
+    } else if (n == 0 || (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))) {
+      msleep(10);
+    } else if (n < 0) {
+      if (errno == EINTR) continue;
+      return -1;
+    }
+
+    gettimeofday(&now, NULL);
+    int elapsed = (int)((now.tv_sec - start.tv_sec) * 1000 +
+                        (now.tv_usec - start.tv_usec) / 1000);
+    if (elapsed >= timeout_ms) return -2;
+  }
+}
+
+/* ===== Serial init ===== */
+static int serialport_init(const char* serialport, int baud) {
+  struct termios toptions;
+  int fd_local=open(serialport, O_RDWR|O_NOCTTY|O_NONBLOCK);
+  if (fd_local<0) { perror("open serial"); return -1; }
+  if (tcgetattr(fd_local,&toptions)<0) { perror("tcgetattr"); close(fd_local); return -1; }
+
+  speed_t brate=B9600;
+  switch (baud) {
+    case 4800: brate=B4800; break; case 9600: brate=B9600; break;
+    case 19200: brate=B19200; break; case 38400: brate=B38400; break;
+    case 57600: brate=B57600; break; case 115200: brate=B115200; break;
+  }
+  cfsetispeed(&toptions, brate); cfsetospeed(&toptions, brate);
+
+  toptions.c_cflag &= ~PARENB;
+  toptions.c_cflag &= ~CSTOPB;
+  toptions.c_cflag &= ~CSIZE;
+  toptions.c_cflag |= CS8;
+
+  toptions.c_cflag &= ~CRTSCTS;
+  toptions.c_cflag |= CREAD | CLOCAL;
+
+  toptions.c_iflag &= ~(IXON|IXOFF|IXANY);
+  toptions.c_lflag &= ~(ICANON|ECHO|ECHOE|ISIG);
+  toptions.c_oflag &= ~OPOST;
+
+  toptions.c_cc[VMIN]=0;
+  toptions.c_cc[VTIME]=10;
+
+  if (tcsetattr(fd_local,TCSANOW,&toptions)<0) { perror("tcsetattr"); close(fd_local); return -1; }
+
+  int flags=fcntl(fd_local,F_GETFL,0);
+  fcntl(fd_local,F_SETFL, flags & ~O_NONBLOCK);
+
+  int mctl; ioctl(fd_local,TIOCMGET,&mctl);
+  mctl |= TIOCM_DTR|TIOCM_RTS;
+  ioctl(fd_local,TIOCMSET,&mctl);
+
+  return fd_local;
+}
+
+/* ===== MySQL ===== */
+static int Mysqlcon(void) {
+  mysql_init(&mycon);
+  if (mysql_real_connect(&mycon, localdb, userdb, passdb, aliasdb, 0, NULL, 0) == NULL) {
+    fprintf(stderr, "Erro ao conectar no banco: %s\n", mysql_error(&mycon));
+    return -1;
+  }
+  printf("Conectou no banco.\n");
+  return 0;
+}
+static bool ExecQuery(const char *SQL) {
+  if (mysql_query(&mycon, SQL)!=0) {
+    fprintf(stderr, "Erro ao Executar SQL: %s | %s\n", SQL, mysql_error(&mycon));
+    return false;
+  }
+  return true;
+}
+static void Closecon(void) { mysql_close(&mycon); }
+
+/* ===== GSM helpers (PT-BR) ===== */
 static const char* cms_reason_pt(int code) {
   switch (code) {
     case 300: return "Falha no aparelho (ME)";
@@ -490,167 +584,149 @@ static const char* cms_reason_pt(int code) {
 }
 static const char* cms_hint_pt(int code) {
   switch (code) {
-    case 300: return "Reinicie o modem e verifique alimentação/USB.";
-    case 301: return "Ajuste configuração/firmware; tente AT+CMGF=1.";
-    case 302: return "Cheque CREG/CSCA/planos e bloqueios de SMS.";
-    case 303: return "Use comandos suportados; revise modo texto/PDU.";
-    case 304: return "Corrija a PDU.";
-    case 305: return "Sanitize a msg/charset; use AT+CSCS=\"GSM\".";
-    case 310: return "Insira o SIM corretamente.";
-    case 311: return "Envie AT+CPIN=\"<PIN>\".";
-    case 312: return "Desbloqueie com PUK junto à operadora.";
-    case 313: return "Troque o SIM/teste em outro aparelho.";
-    case 314: return "Aguarde e tente novamente.";
-    case 315: return "Verifique compatibilidade/PLMN do SIM.";
-    case 316: return "Desbloqueie com PUK2.";
-    case 317: return "Informe PIN2 válido.";
-    case 320: return "Limpe mensagens (AT+CMGD) ou reinicie.";
-    case 321: return "Corrija o índice de memória.";
-    case 322: return "Apague mensagens (AT+CMGD=1,4).";
-    case 330: return "Configure o SMSC (AT+CSCA=\"+55...\").";
-    case 331: return "Verifique sinal/antena; tente 2G/3G.";
-    case 332: return "Tente novamente; confira cobertura/PLMN.";
-    case 500: return "Habilite AT+CMEE=2 e revise os logs.";
-    default:  return "Consulte operadora/modem para detalhes.";
+    case 302: return "Operadora/linha pode bloquear SMS. Verifique plano/crédito/M2M.";
+    case 330: return "Configure SMSC (AT+CSCA=\"+55...\",145).";
+    case 331: return "Sem rede: verifique sinal/antena, tente 2G/3G.";
+    case 332: return "Rede lenta: tente novamente, confirme registro (CREG).";
+    case 500: return "Erro genérico: confira registro, SMSC, bloqueio do SIM.";
+    default:  return "Verifique CPIN/CREG/CSQ e configurações do modem.";
   }
 }
-
-/* Extrai +CMS ERROR: N ou +ACMS ERROR: N */
-static int extract_cms_from_resp(const char *resp, int *code, char *which, size_t which_sz) {
+static int extract_cms_from_resp(const char *resp, int *code) {
   if (!resp) return 0;
-  const char *tags[] = { "+CMS ERROR:", "+ACMS ERROR:" };
-  for (int i=0;i<2;i++) {
-    const char *p = strstr(resp, tags[i]);
-    if (p) {
-      p += (int)strlen(tags[i]);
-      while (*p==' ' || *p=='\t') p++;
-      int n = atoi(p);
-      if (code) *code = n;
-      if (which && which_sz>0) snprintf(which, which_sz, "%s", (tags[i][1]=='C') ? "+CMS" : "+ACMS");
-      return 1;
-    }
-  }
-  return 0;
+  const char *p = strstr(resp, "+CMS ERROR:");
+  if (!p) p = strstr(resp, "+ACMS ERROR:");
+  if (!p) return 0;
+  p = strchr(p, ':');
+  if (!p) return 0;
+  p++;
+  while (*p==' ' || *p=='\t') p++;
+  int n = atoi(p);
+  if (code) *code = n;
+  return 1;
 }
 
-/* ===== MySQL ===== */
-static int Mysqlcon(void) {
-  mysql_init(&mycon);
-  if (mysql_real_connect(&mycon, localdb, userdb, passdb, aliasdb, 0, NULL, 0) == NULL) {
-    fprintf(stderr, "Erro ao conectar no banco: %s\n", mysql_error(&mycon));
+/* ===== AT send (verbose) ===== */
+static int send_at_expect_ok_verbose(const char *cmd, int timeout_ms, const char *etapa) {
+  char resp[READ_CMD_BUF];
+  resp[0] = '\0';
+
+  printf("\n[Setup][%s] >>> %s", etapa, cmd);
+  fflush(stdout);
+
+  serialport_clear(fd);
+  msleep(AT_AFTER_CLEAR_MS);
+
+  if (serialport_write_all(fd, cmd) < 0) {
+    fprintf(stderr, "[Setup][%s] ERRO escrevendo na serial (errno=%d: %s)\n",
+            etapa, errno, strerror(errno));
     return -1;
   }
-  printf("Conectou no banco.\n");
-  return 0;
-}
-static bool ExecQuery(const char *SQL) {
-  if (mysql_query(&mycon, SQL)!=0) {
-    fprintf(stderr, "Erro ao Executar SQL: %s | %s\n", SQL, mysql_error(&mycon));
-    return false;
-  }
-  return true;
-}
 
-/* ===== Log de Envio (tabela simples sms_log) =====
-   CREATE TABLE IF NOT EXISTS sms_log (
-     idlog BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-     idjob INT UNSIGNED NULL,
-     telefone VARCHAR(20) NOT NULL,
-     mensagem VARCHAR(500) NOT NULL,
-     resultado ENUM('SUCESSO','ERRO','DESCARTE') NOT NULL,
-     codigo INT NULL,
-     resposta TEXT NULL,
-     observacao VARCHAR(255) NULL,
-     dthr TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-*/
-/* INSERT em sms_log (simples e sem helpers extras) */
-static void LogEnvioDB(int idjob,                  /* use -1 para NULL */
-                       const char *telefone,
-                       const char *mensagem,       /* truncada a 500 chars */
-                       const char *resultado,      /* 'SUCESSO' | 'ERRO' | 'DESCARTE' */
-                       int codigo,                 /* use -1 para NULL */
-                       const char *resposta,       /* pode ser NULL */
-                       const char *observacao)     /* pode ser NULL */
-{
-  /* 1) truncagem segura da mensagem para caber no VARCHAR(500) */
-  char msg_trunc[501] = {0};
-  if (mensagem) {
-    size_t n = strlen(mensagem);
-    if (n > 500) n = 500;
-    memcpy(msg_trunc, mensagem, n);
-    msg_trunc[n] = '\0';
-  }
+  msleep(AT_GAP_MS);
 
-  /* 2) escapar strings para MySQL */
-  char tel_sql[64], msg_sql[1024], res_sql[32], resp_sql[2048], obs_sql[512];
-  mysql_real_escape_string(&mycon, tel_sql, telefone ? telefone : "", (unsigned long)strlen(telefone ? telefone : ""));
-  mysql_real_escape_string(&mycon, msg_sql, msg_trunc, (unsigned long)strlen(msg_trunc));
-  mysql_real_escape_string(&mycon, res_sql, resultado ? resultado : "ERRO", (unsigned long)strlen(resultado ? resultado : "ERRO"));
-
-  int have_resp = (resposta && *resposta);
-  int have_obs  = (observacao && *observacao);
-  if (have_resp) mysql_real_escape_string(&mycon, resp_sql, resposta,   (unsigned long)strlen(resposta));
-  if (have_obs)  mysql_real_escape_string(&mycon, obs_sql,  observacao, (unsigned long)strlen(observacao));
-
-  /* 3) montar partes condicionais (NULL vs valor) */
-  char idstr[32];   snprintf(idstr,   sizeof(idstr),   (idjob  >= 0) ? "%d"  : "NULL", idjob);
-  char codestr[32]; snprintf(codestr, sizeof(codestr), (codigo >= 0) ? "%d"  : "NULL", codigo);
-
-  char respstr[2100];
-  if (have_resp)  snprintf(respstr, sizeof(respstr), "'%s'", resp_sql);
-  else            strcpy(respstr, "NULL");
-
-  char obsstr[600];
-  if (have_obs)   snprintf(obsstr, sizeof(obsstr),  "'%s'", obs_sql);
-  else            strcpy(obsstr, "NULL");
-
-  /* 4) SQL final — sem buracos */
-  char sql[4096];
-  snprintf(sql, sizeof(sql),
-    "INSERT INTO sms_log (idjob, telefone, mensagem, resultado, codigo, resposta, observacao) "
-    "VALUES (%s, '%s', '%s', '%s', %s, %s, %s);",
-    idstr, tel_sql, msg_sql, res_sql, codestr, respstr, obsstr
-  );
-
-  ExecQuery(sql);
-}
-
-/* ===== GSM ===== */
-static int send_at_expect_ok(const char *cmd, int timeout_ms, const char *etapa) {
-  char tmp[READ_CMD_BUF]; serialport_clear(fd);
-  if (serialport_write(fd, cmd)<0) { fprintf(stderr,"[Init][%s] Falha ao escrever: %s\n", etapa, cmd); return -1; }
-  if (serialport_read_cmd(fd, tmp, timeout_ms)<0) { fprintf(stderr,"[Init][%s] Timeout aguardando resposta de: %s\n", etapa, cmd); return -1; }
-  if (!strstr(tmp,"OK")) {
-    int code = -1; char which[8] = "";
-    if (extract_cms_from_resp(tmp, &code, which, sizeof(which))) {
-      fprintf(stderr,"[Init][%s] %s ERROR: %d (%s). Dica: %s\n",
-              etapa, which, code, cms_reason_pt(code), cms_hint_pt(code));
-    } else {
-      fprintf(stderr,"[Init][%s] Resposta sem OK: %s\n", etapa, tmp);
-    }
+  int rr = serialport_read_cmd(fd, resp, timeout_ms);
+  if (rr < 0) {
+    fprintf(stderr, "[Setup][%s] TIMEOUT/ERRO lendo resposta (rr=%d). Cmd=%s\n",
+            etapa, rr, cmd);
     return -1;
   }
-  printf("[Init][%s] OK\n", etapa); return 0;
+
+  printf("[Setup][%s] <<< RESPOSTA DO MODEM (bruta):\n%s\n", etapa, resp);
+
+  if (strstr(resp, "OK")) {
+    printf("[Setup][%s] OK\n", etapa);
+    return 0;
+  }
+
+  int code = -1;
+  if (extract_cms_from_resp(resp, &code)) {
+    fprintf(stderr,
+            "[Setup][%s] FALHA: +CMS ERROR: %d (%s)\n"
+            "[Setup][%s] Dica: %s\n",
+            etapa, code, cms_reason_pt(code),
+            etapa, cms_hint_pt(code));
+  } else if (strstr(resp, "ERROR")) {
+    fprintf(stderr, "[Setup][%s] FALHA: Modem respondeu ERROR (sem +CMS). Veja dump acima.\n", etapa);
+  } else {
+    fprintf(stderr, "[Setup][%s] FALHA: Resposta inesperada (sem OK/ERROR). Veja dump acima.\n", etapa);
+  }
+  return -1;
 }
 
+/* ===== Network registration ===== */
+static int WaitNetworkRegistered(int timeout_ms) {
+  int elapsed = 0;
+  char resp[READ_CMD_BUF];
+
+  while (elapsed <= timeout_ms) {
+    if (send_at_expect_ok_verbose("AT+CREG?\r", SHORT_TIMEOUT_MS, "CREG?") != 0) {
+      fprintf(stderr, "[NET] Falha consultando CREG.\n");
+      return -1;
+    }
+
+    /* A resposta bruta já foi mostrada; vamos reler rapidinho para checar */
+    /* (para evitar depender do print anterior, usamos resp com novo comando) */
+    serialport_clear(fd);
+    serialport_write_all(fd, "AT+CREG?\r");
+    serialport_read_cmd(fd, resp, SHORT_TIMEOUT_MS);
+
+    if (strstr(resp, ",1") || strstr(resp, ",5")) {
+      printf("[NET] Registrado na rede (CREG = 1 ou 5)\n");
+      return 0;
+    }
+
+    printf("[NET] Aguardando registro na rede... (%dms)\n", elapsed);
+    msleep(NETREG_POLL_MS);
+    elapsed += NETREG_POLL_MS;
+  }
+
+  fprintf(stderr, "[NET] Timeout: não registrou na rede em %dms\n", timeout_ms);
+  return -1;
+}
+
+/* ===== Inicialização Modem ===== */
 static int InicializaModem(void) {
-  if (send_at_expect_ok("AT\r",       SHORT_TIMEOUT_MS,"AT"  )!=0) return -1;
-  if (send_at_expect_ok("ATE0\r",     SHORT_TIMEOUT_MS,"ATE0")!=0) return -1;
-  if (send_at_expect_ok("AT+CMEE=2\r",SHORT_TIMEOUT_MS,"CMEE")!=0) return -1;
-  if (send_at_expect_ok("AT+CMGF=1\r",SHORT_TIMEOUT_MS,"CMGF")!=0) return -1;
-  if (send_at_expect_ok("AT+CSCS=\"GSM\"\r", SHORT_TIMEOUT_MS,"CSCS")!=0) return -1;
-  if (send_at_expect_ok("ATI\r",      SHORT_TIMEOUT_MS,"ATI" )!=0) return -1;
+  printf("\n[Setup] Iniciando modem: teste AT simples (até 3 tentativas)\n");
 
-  char tmp[READ_CMD_BUF];
-  serialport_clear(fd); serialport_write(fd,"AT+CREG?\r");
-  if (serialport_read_cmd(fd,tmp,SHORT_TIMEOUT_MS)>=0) printf("%s", tmp);
-  serialport_clear(fd); serialport_write(fd,"AT+CSQ\r");
-  if (serialport_read_cmd(fd,tmp,SHORT_TIMEOUT_MS)>=0) printf("%s", tmp);
+  int ok = -1;
+  for (int i=1;i<=3;i++) {
+    char etapa[32];
+    snprintf(etapa, sizeof(etapa), "AT try %d/3", i);
+    if (send_at_expect_ok_verbose("AT\r", SHORT_TIMEOUT_MS, etapa) == 0) { ok = 0; break; }
+    msleep(300);
+  }
+  if (ok != 0) {
+    fprintf(stderr, "[Setup] Falha: modem não respondeu OK ao AT.\n");
+    return -1;
+  }
+
+  printf("\n[Setup] Executando sequência padrão de inicialização (fail-fast)\n");
+
+  if (send_at_expect_ok_verbose("ATE0\r",            SHORT_TIMEOUT_MS, "ATE0") != 0) return -1;
+  if (send_at_expect_ok_verbose("AT+CMEE=2\r",       SHORT_TIMEOUT_MS, "CMEE=2") != 0) return -1;
+
+  if (send_at_expect_ok_verbose("AT+CMGF=1\r",       SHORT_TIMEOUT_MS, "CMGF=1 (TEXT)") != 0) return -1;
+  if (send_at_expect_ok_verbose("AT+CSCS=\"GSM\"\r", SHORT_TIMEOUT_MS, "CSCS=\"GSM\"") != 0) return -1;
+
+  /* Opcional recomendado */
+  (void)send_at_expect_ok_verbose("AT+CSMP=17,167,0,0\r", SHORT_TIMEOUT_MS, "CSMP (opcional)");
+
+  if (send_at_expect_ok_verbose("ATI\r",             SHORT_TIMEOUT_MS, "ATI") != 0) return -1;
+
+  /* Espera rede */
+  if (WaitNetworkRegistered(NETREG_TIMEOUT_MS) != 0) return -1;
+
+  /* Debug status */
+  (void)send_at_expect_ok_verbose("AT+CPIN?\r", SHORT_TIMEOUT_MS, "CPIN?");
+  (void)send_at_expect_ok_verbose("AT+CSQ\r",   SHORT_TIMEOUT_MS, "CSQ");
+  (void)send_at_expect_ok_verbose("AT+CREG?\r", SHORT_TIMEOUT_MS, "CREG? (final)");
+
+  printf("\n[Setup] ✅ Modem inicializado com sucesso (TEXT MODE pronto)\n");
   return 0;
 }
 
-/* Normaliza telefone para E.164 (Brasil). Retorna 0 se ok, -1 se inválido. */
+/* ===== Normaliza telefone Brasil E.164 ===== */
 static int normalize_br_e164(const char *in, char *out, size_t outsz) {
   char digits[32]; size_t j = 0;
   for (const char *p = in; *p && j < sizeof(digits)-1; ++p) {
@@ -666,142 +742,178 @@ static int normalize_br_e164(const char *in, char *out, size_t outsz) {
     if (snprintf(out, outsz, "+%s", digits) >= (int)outsz) return -1;
     return 0;
   }
-
   return -1;
 }
 
-/* Consulta AT+CSCA? e, se vazio, seta com smsc_cfg (se fornecido) */
+/* ===== SMSC ===== */
+static int is_smsc_text_ok(const char *smsc) {
+  if (!smsc || !*smsc) return 0;
+  if (smsc[0] != '+') return 0;
+  for (const char *p = smsc+1; *p; ++p) {
+    if (*p < '0' || *p > '9') return 0;
+  }
+  return 1;
+}
+
 static int EnsureSMSC(void) {
   char resp[READ_CMD_BUF];
-  serialport_clear(fd);
-  if (serialport_write(fd, "AT+CSCA?\r") < 0) return -1;
-  if (serialport_read_cmd(fd, resp, SHORT_TIMEOUT_MS) < 0) return -1;
-  printf("[SMSC] CSCA? resp:\n%s\n", resp);
+  resp[0]='\0';
 
-  if (strstr(resp, "+CSCA:")) {
-    const char *q1 = strchr(resp, '\"');
+  printf("\n[Setup] Verificando SMSC (CSCA)\n");
+
+  serialport_clear(fd);
+  serialport_write_all(fd, "AT+CSCA?\r");
+  if (serialport_read_cmd(fd, resp, SHORT_TIMEOUT_MS) < 0) {
+    fprintf(stderr, "[SMSC] Falha lendo CSCA?\n");
+    return -1;
+  }
+
+  printf("[SMSC] CSCA? resp bruta:\n%s\n", resp);
+
+  char current[96] = {0};
+  const char *p = strstr(resp, "+CSCA:");
+  if (p) {
+    const char *q1 = strchr(p, '\"');
     const char *q2 = q1 ? strchr(q1+1, '\"') : NULL;
-    if (q1 && q2 && (q2 > q1+1)) {
-      printf("[SMSC] já configurado: %.*s\n", (int)(q2 - (q1+1)), q1+1);
-      return 0;
+    if (q1 && q2 && q2 > q1+1) {
+      size_t n = (size_t)(q2 - (q1+1));
+      if (n >= sizeof(current)) n = sizeof(current)-1;
+      memcpy(current, q1+1, n);
+      current[n] = '\0';
     }
   }
 
+  if (is_smsc_text_ok(current)) {
+    printf("[SMSC] Já configurado (texto): %s\n", current);
+    return 0;
+  }
+
+  printf("[SMSC] CSCA atual inválido (possível UCS2/hex ou vazio). Tentando setar.\n");
+
   if (!*smsc_cfg) {
-    fprintf(stderr, "[SMSC] ausente e nenhum SMSC fornecido no cfg/ENV.\n");
+    fprintf(stderr, "[SMSC] CSCA inválido/ausente e nenhum SMSC fornecido no cfg/ENV.\n");
+    return -1;
+  }
+  if (!is_smsc_text_ok(smsc_cfg)) {
+    fprintf(stderr, "[SMSC] SMSC do cfg/ENV inválido (esperado +55...): '%s'\n", smsc_cfg);
     return -1;
   }
 
   char cmd[128];
-  snprintf(cmd, sizeof(cmd), "AT+CSCA=\"%s\"\r", smsc_cfg);
-  printf("[SMSC] definindo CSCA: %s\n", cmd);
-  if (send_at_expect_ok(cmd, SHORT_TIMEOUT_MS, "CSCA") != 0) {
-    fprintf(stderr, "[SMSC] falha ao setar CSCA\n");
+  snprintf(cmd, sizeof(cmd), "AT+CSCA=\"%s\",145\r", smsc_cfg);
+
+  if (send_at_expect_ok_verbose(cmd, SHORT_TIMEOUT_MS, "CSCA(set)") != 0) {
+    fprintf(stderr, "[SMSC] Falha ao setar CSCA\n");
     return -1;
+  }
+
+  serialport_clear(fd);
+  serialport_write_all(fd, "AT+CSCA?\r");
+  if (serialport_read_cmd(fd, resp, SHORT_TIMEOUT_MS) >= 0) {
+    printf("[SMSC] CSCA? pós-set:\n%s\n", resp);
   }
   return 0;
 }
 
-/* ===== Envio de SMS (com logs no banco) ===== */
+/* ===== Envio SMS (TEXT MODE) ===== */
 static int EnviaSMS(int job_id_param, const char *telefone_e164, const char *texto) {
   int msg_len = (int)strlen(texto);
-  printf("[SMS-%d] Iniciando envio...\n", job_id_param);
+  printf("\n[SMS-%d] Iniciando envio...\n", job_id_param);
   printf("[SMS-%d] Telefone: %s\n", job_id_param, telefone_e164);
-  printf("[SMS-%d] Mensagem (len=%d): \"%s\"\n", job_id_param, msg_len, texto);
+  printf("[SMS-%d] Mensagem (len=%d)\n", job_id_param, msg_len);
 
   if (msg_len > MAX_SMS_CHARS) {
-    fprintf(stderr, "[%d] Mensagem excede %d caracteres, abortando.\n", job_id_param, MAX_SMS_CHARS);
-    LogEnvioDB(job_id_param, telefone_e164, texto, "DESCARTE", -1, NULL, "Mensagem muito longa");
+    fprintf(stderr, "[SMS-%d] Mensagem excede %d caracteres, abortando.\n", job_id_param, MAX_SMS_CHARS);
     return -1;
   }
 
-  char tmp[READ_CMD_BUF];
-
-  /* 1. Testa modem */
-  printf("[SMS-%d] Enviando AT (ping modem)...\n", job_id_param);
-  if (send_at_expect_ok("AT\r", SHORT_TIMEOUT_MS, "Ping antes do envio") != 0) {
-    fprintf(stderr, "[%d] Modem não respondeu AT antes do envio\n", job_id_param);
-    LogEnvioDB(job_id_param, telefone_e164, texto, "ERRO", 500, "Sem resposta a AT", "Modem não respondeu AT");
+  if (WaitNetworkRegistered(15000) != 0) {
+    fprintf(stderr, "[SMS-%d] Sem registro de rede antes do envio.\n", job_id_param);
     return -1;
   }
 
-  /* 2. CMGS */
+  if (send_at_expect_ok_verbose("AT+CMGF=1\r",       SHORT_TIMEOUT_MS, "CMGF(TEXT) before send") != 0) return -1;
+  if (send_at_expect_ok_verbose("AT+CSCS=\"GSM\"\r", SHORT_TIMEOUT_MS, "CSCS(GSM) before send") != 0) return -1;
+
   char cmd[128];
   snprintf(cmd, sizeof(cmd), "AT+CMGS=\"%s\"\r", telefone_e164);
-  printf("[SMS-%d] Enviando comando: %s\n", job_id_param, cmd);
-  if (serialport_write(fd, cmd) < 0) {
-    fprintf(stderr, "[%d] Falha escrevendo CMGS\n", job_id_param);
-    LogEnvioDB(job_id_param, telefone_e164, texto, "ERRO", 500, "Falha ao escrever CMGS", "Escrita serial falhou");
+  printf("[SMS-%d] CMGS: %s\n", job_id_param, cmd);
+
+  serialport_clear(fd);
+  if (serialport_write_all(fd, cmd) < 0) {
+    fprintf(stderr, "[SMS-%d] Falha escrevendo CMGS\n", job_id_param);
     return -1;
   }
 
-  /* 3. Espera '>' */
   printf("[SMS-%d] Aguardando prompt '>'...\n", job_id_param);
-  if (serialport_read_cmd(fd, tmp, PROMPT_TIMEOUT_MS) < 0 || !strstr(tmp, ">")) {
-    int code=-1; char which[8]="";
-    if (extract_cms_from_resp(tmp, &code, which, sizeof(which))) {
-      fprintf(stderr, "[%d] %s ERROR: %d (%s) durante espera de '>'\n",
-              job_id_param, which, code, cms_reason_pt(code));
-      LogEnvioDB(job_id_param, telefone_e164, texto, "ERRO", code, tmp, cms_reason_pt(code));
-    } else {
-      fprintf(stderr, "[%d] Timeout aguardando '>' para CMGS. Resposta bruta:\n%s\n", job_id_param, tmp);
-      LogEnvioDB(job_id_param, telefone_e164, texto, "ERRO", 332, tmp, "Tempo de rede esgotado / prompt ausente");
+
+  char tok[READ_CMD_BUF];
+  tok[0] = '\0';
+
+  msleep(CMGS_BEFORE_READ_MS);
+  int pr = serialport_read_token(fd, tok, sizeof(tok), PROMPT_TIMEOUT_MS);
+
+  if (pr != 0 || strchr(tok, '>') == NULL) {
+    int code=-1;
+    fprintf(stderr, "[SMS-%d] Falhou esperando '>' (pr=%d). Resp bruta:\n%s\n",
+            job_id_param, pr, tok);
+
+    if (extract_cms_from_resp(tok, &code)) {
+      fprintf(stderr, "[SMS-%d] +CMS ERROR: %d (%s)\n", job_id_param, code, cms_reason_pt(code));
+      fprintf(stderr, "[SMS-%d] Dica: %s\n", job_id_param, cms_hint_pt(code));
+    } else if (strstr(tok, "ERROR")) {
+      fprintf(stderr, "[SMS-%d] ERROR sem +CMS (provável rejeição do comando ou estado do modem)\n", job_id_param);
     }
     return -1;
   }
 
-  /* 4. Envia texto */
-  if (serialport_write(fd, texto) < 0) {
-    fprintf(stderr, "[%d] Falha escrevendo texto da mensagem\n", job_id_param);
-    LogEnvioDB(job_id_param, telefone_e164, texto, "ERRO", 500, "Falha escrevendo texto", "Escrita serial falhou");
+  printf("[SMS-%d] Prompt '>' recebido. Enviando texto + CTRL+Z...\n", job_id_param);
+
+  if (serialport_write_all(fd, texto) < 0) {
+    fprintf(stderr, "[SMS-%d] Falha escrevendo texto\n", job_id_param);
     return -1;
   }
-
-  /* 5. CTRL+Z */
+  msleep(SMS_TEXT_GAP_MS);
   uint8_t z = CTRL_Z;
-  if (serialport_write_raw(fd, &z, 1) < 0) {
-    fprintf(stderr, "[%d] Falha enviando CTRL+Z\n", job_id_param);
-    LogEnvioDB(job_id_param, telefone_e164, texto, "ERRO", 500, "Falha enviando CTRL+Z", "Escrita serial falhou");
+  if (serialport_write_raw_all(fd, &z, 1) < 0) {
+    fprintf(stderr, "[SMS-%d] Falha enviando CTRL+Z\n", job_id_param);
     return -1;
   }
+  msleep(AFTER_CTRLZ_MS);
 
-  /* 6. Confirmação final */
-  tmp[0] = '\0';
-  int r = serialport_read_cmd(fd, tmp, OK_TIMEOUT_MS);
+  char resp[READ_CMD_BUF];
+  resp[0] = '\0';
+  int r = serialport_read_cmd(fd, resp, OK_TIMEOUT_MS);
   if (r < 0) {
-    fprintf(stderr, "[%d] Timeout aguardando confirmação do envio\n", job_id_param);
-    LogEnvioDB(job_id_param, telefone_e164, texto, "ERRO", 332, tmp, "Tempo de rede esgotado na confirmação");
+    fprintf(stderr, "[SMS-%d] Timeout aguardando confirmação do envio\n", job_id_param);
     return -1;
   }
 
-  /* 7. Avalia resposta */
-  if (strstr(tmp, "ERROR")) {
-    int code = -1; char which[8] = "";
-    if (extract_cms_from_resp(tmp, &code, which, sizeof(which))) {
-      fprintf(stderr, "[%d] Modem retornou %s ERROR: %d (%s). Dica: %s\n",
-              job_id_param, which, code, cms_reason_pt(code), cms_hint_pt(code));
-      LogEnvioDB(job_id_param, telefone_e164, texto, "ERRO", code, tmp, cms_reason_pt(code));
+  printf("[SMS-%d] Confirmação bruta:\n%s\n", job_id_param, resp);
+
+  if (strstr(resp, "ERROR")) {
+    int code = -1;
+    if (extract_cms_from_resp(resp, &code)) {
+      fprintf(stderr, "[SMS-%d] +CMS ERROR: %d (%s)\n", job_id_param, code, cms_reason_pt(code));
+      fprintf(stderr, "[SMS-%d] Dica: %s\n", job_id_param, cms_hint_pt(code));
     } else {
-      fprintf(stderr, "[%d] Modem retornou ERROR (sem código explícito)\n", job_id_param);
-      LogEnvioDB(job_id_param, telefone_e164, texto, "ERRO", 500, tmp, "Erro sem código");
-    }
-    return -1;
-  }
-  if (!strstr(tmp, "+CMGS:") || !strstr(tmp, "OK")) {
-    int code=-1; char which[8]="";
-    if (extract_cms_from_resp(tmp, &code, which, sizeof(which))) {
-      fprintf(stderr, "[%d] %s ERROR: %d (%s) (confirmação incompleta)\n",
-              job_id_param, which, code, cms_reason_pt(code));
-      LogEnvioDB(job_id_param, telefone_e164, texto, "ERRO", code, tmp, cms_reason_pt(code));
-    } else {
-      fprintf(stderr, "[%d] Confirmação possivelmente incompleta.\n", job_id_param);
-      LogEnvioDB(job_id_param, telefone_e164, texto, "ERRO", 500, tmp, "Confirmação incompleta");
+      fprintf(stderr, "[SMS-%d] ERROR sem código explícito.\n", job_id_param);
     }
     return -1;
   }
 
-  printf("[SMS-%d] SMS enviado com sucesso!\n", job_id_param);
-  LogEnvioDB(job_id_param, telefone_e164, texto, "SUCESSO", -1, tmp, "Enviado com sucesso");
+  if (!strstr(resp, "+CMGS:") || !strstr(resp, "OK")) {
+    int code=-1;
+    if (extract_cms_from_resp(resp, &code)) {
+      fprintf(stderr, "[SMS-%d] +CMS ERROR: %d (%s)\n", job_id_param, code, cms_reason_pt(code));
+      fprintf(stderr, "[SMS-%d] Dica: %s\n", job_id_param, cms_hint_pt(code));
+    } else {
+      fprintf(stderr, "[SMS-%d] Confirmação incompleta (sem +CMGS/OK).\n", job_id_param);
+    }
+    return -1;
+  }
+
+  printf("[SMS-%d] ✅ SMS enviado com sucesso!\n", job_id_param);
   return 0;
 }
 
@@ -825,20 +937,19 @@ static int BuscaJobs(void) {
 
     int this_idjob = row[0] ? atoi(row[0]) : 0;
 
-    /* telefone (normaliza p/ E.164) */
+    char job_telefone[64];
+    char job_mensagem[MAX_SMS_CHARS + 1];
+
     snprintf(job_telefone, sizeof(job_telefone), "%s", row[1] ? row[1] : "");
     char e164[32];
     if (normalize_br_e164(job_telefone, e164, sizeof(e164)) != 0) {
-      fprintf(stderr, "[JOB %d] Telefone inválido p/ E.164 (in: %s) — marcando status=9\n", this_idjob, job_telefone);
+      fprintf(stderr, "[JOB %d] Telefone inválido E.164 (in: %s) — status=9\n", this_idjob, job_telefone);
       snprintf(SQLCMD,sizeof(SQLCMD), "UPDATE jobs SET status = 9 WHERE idjob = %d;", this_idjob);
       ExecQuery(SQLCMD);
-      /* log no banco: DESCARTE */
-      LogEnvioDB(this_idjob, job_telefone, row[2] ? row[2] : "", "DESCARTE", -1, NULL, "Telefone inválido E.164");
       msleep(200);
       continue;
     }
 
-    /* mensagem: copia segura até 1000 chars */
     size_t src_len = (row[2] ? lengths[2] : 0);
     size_t max_len = sizeof(job_mensagem) - 1;
     if (src_len > max_len) src_len = max_len;
@@ -849,14 +960,12 @@ static int BuscaJobs(void) {
       job_mensagem[0] = '\0';
     }
 
-    /* normaliza CR/LF para espaço (para o modem) */
     for (char *p = job_mensagem; *p; ++p) {
       if (*p == '\r' || *p == '\n') *p = ' ';
     }
 
-    printf("[JOB] id=%d telefone(E164)=%s len_msg=%zu\n", this_idjob, e164, strlen(job_mensagem));
+    printf("[JOB] id=%d telefone=%s len_msg=%zu\n", this_idjob, e164, strlen(job_mensagem));
 
-    /* Envio com 2 tentativas */
     int ret = EnviaSMS(this_idjob, e164, job_mensagem);
     if (ret != 0) {
       fprintf(stderr, "Job %d: 1a tentativa falhou. Tentando novamente...\n", this_idjob);
@@ -868,11 +977,11 @@ static int BuscaJobs(void) {
     if (ret == 0) {
       snprintf(SQLCMD,sizeof(SQLCMD), "UPDATE jobs SET status = 1 WHERE idjob = %d;", this_idjob);
       ExecQuery(SQLCMD);
-      printf("Job %d: status atualizado para 1 (sucesso)\n", this_idjob);
+      printf("Job %d: status=1 (sucesso)\n", this_idjob);
     } else {
       snprintf(SQLCMD,sizeof(SQLCMD), "UPDATE jobs SET status = 9 WHERE idjob = %d;", this_idjob);
       ExecQuery(SQLCMD);
-      fprintf(stderr, "Job %d: erro após 2 tentativas. Status=9.\n", this_idjob);
+      fprintf(stderr, "Job %d: erro após 2 tentativas. status=9.\n", this_idjob);
     }
 
     count++;
@@ -883,51 +992,86 @@ static int BuscaJobs(void) {
   return count;
 }
 
-static void Closecon(void) { mysql_close(&mycon); }
-
-/* ===== Outros ===== */
+/* ===== UI ===== */
 static void Wellcome(void) {
-  printf("srvSMS - Servidor de SMS\n");
+  printf("srvSMS - Servidor de SMS (TEXT MODE)\n");
   printf("Criado por Marcelo Maurin Martins\n");
-  printf("Todos os direitos reservados a Maurinsoft\n");
-  printf("http://maurinsoft.com.br\n\n");
+  printf("Maurinsoft - http://maurinsoft.com.br\n\n");
 }
 
-/* ===== Serial init ===== */
-static int serialport_init(const char* serialport, int baud) {
-  struct termios toptions;
-  int fd_local=open(serialport, O_RDWR|O_NOCTTY|O_NONBLOCK);
-  if (fd_local<0) { perror("open serial"); return -1; }
-  if (tcgetattr(fd_local,&toptions)<0) { perror("tcgetattr"); close(fd_local); return -1; }
-  speed_t brate=B9600;
-  switch (baud) {
-    case 4800: brate=B4800; break; case 9600: brate=B9600; break;
-    case 19200: brate=B19200; break; case 38400: brate=B38400; break;
-    case 57600: brate=B57600; break; case 115200: brate=B115200; break;
+/* ===== Setup/Loop ===== */
+static int Setup(int baud) {
+  printf("[Setup] Carregando config...\n");
+  if (ensure_config(&g_cfg)!=0) {
+    fprintf(stderr,"[Setup] Falha ao preparar/carregar %s\n", CFG_PATH);
+    return -1;
   }
-  cfsetispeed(&toptions, brate); cfsetospeed(&toptions, brate);
-  toptions.c_cflag &= ~PARENB; toptions.c_cflag &= ~CSTOPB; toptions.c_cflag &= ~CSIZE; toptions.c_cflag |= CS8;
-  toptions.c_cflag &= ~CRTSCTS; toptions.c_cflag |= CREAD | CLOCAL;
-  toptions.c_iflag &= ~(IXON|IXOFF|IXANY);
-  toptions.c_lflag &= ~(ICANON|ECHO|ECHOE|ISIG);
-  toptions.c_oflag &= ~OPOST;
-  toptions.c_cc[VMIN]=0; toptions.c_cc[VTIME]=10;
-  if (tcsetattr(fd_local,TCSANOW,&toptions)<0) { perror("tcsetattr"); close(fd_local); return -1; }
-  int flags=fcntl(fd_local,F_GETFL,0); fcntl(fd_local,F_SETFL, flags & ~O_NONBLOCK);
-  int mctl; ioctl(fd_local,TIOCMGET,&mctl); mctl |= TIOCM_DTR|TIOCM_RTS; ioctl(fd_local,TIOCMSET,&mctl);
-  return fd_local;
+  g_cfg_mtime = file_mtime(CFG_PATH);
+
+  apply_db_from_cfg(&g_cfg);
+
+  if (!*localdb || !*userdb || !*aliasdb) {
+    fprintf(stderr,
+      "[Setup] Config de banco incompleta. Defina LOCALDB/USERDB/ALIASDB em %s ou via env SMS_*\n",
+      CFG_PATH
+    );
+    return -1;
+  }
+
+  printf("[Setup] Abrindo log diário...\n");
+  init_daily_log();
+  Wellcome();
+
+  printf("[Setup] Abrindo conexao com Banco de dados...\n");
+  if (Mysqlcon()==-1) {
+    fprintf(stderr,"[Setup] Nao é possivel conectar ao banco de dados\n");
+    return -1;
+  }
+
+  ExecQuery("SET NAMES utf8mb4");
+  ExecQuery("SET CHARACTER SET utf8mb4");
+
+  printf("[Setup] Inicializando Device %s @ %d...\n", device, baud);
+  fd = serialport_init(device, baud);
+  if (fd==-1) {
+    fprintf(stderr,"[Setup] Erro ao abrir porta serial\n");
+    return -1;
+  }
+
+  printf("[Setup] Inicializando Modem (TEXT MODE)...\n");
+  if (InicializaModem()!=0) {
+    fprintf(stderr,"[Setup] ❌ Falha ao iniciar modem. Motivo acima. Loop não será iniciado.\n");
+    return -1;
+  }
+
+  printf("[Setup] Verificando SMSC...\n");
+  if (EnsureSMSC() != 0) {
+    fprintf(stderr, "[Setup] Aviso: SMSC não configurado/indisponível; envio pode falhar (+CMS 302/500).\n");
+  }
+
+  printf("\n[Setup] ✅ Setup concluído. Entrando no Loop.\n");
+  return 0;
+}
+
+static void Loop(void) {
+  while (1) {
+    reload_cfg_if_changed();
+    maybe_rotate_daily_log();
+
+    if (!now_in_window(&g_cfg)) { msleep(10000); continue; }
+
+    int n = BuscaJobs();
+    if (n <= 0) msleep(1000); else msleep(500);
+
+    serialport_clear(fd);
+  }
 }
 
 /* ===== MAIN ===== */
 int main(int argc, char *argv[]) {
-  if (ensure_config(&g_cfg)!=0) {
-    fprintf(stderr,"Falha ao preparar/carregar %s\n", CFG_PATH);
-    return EXIT_FAILURE;
-  }
-  g_cfg_mtime = file_mtime(CFG_PATH);
+  int opt;
+  int baud = 9600;
 
-  /* CLI: -d /dev/tty..., -b 115200, -m S|A */
-  int opt; int baud=9600;
   while ((opt=getopt(argc,argv,"d:b:m:"))!=-1) {
     switch(opt) {
       case 'd': snprintf(device,sizeof(device), "%s", optarg); break;
@@ -941,70 +1085,33 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  /* Determina MODO efetivo: CLI > ENV > CFG */
+  /* Carrega cfg cedo só para definir modo e log corretamente */
+  if (ensure_config(&g_cfg) != 0) {
+    fprintf(stderr,"Falha ao preparar/carregar %s\n", CFG_PATH);
+    return EXIT_FAILURE;
+  }
+
   char env_force=0; const char *f=getenv("SMS_FORCE_MODO");
   if (f && (*f=='S'||*f=='s'||*f=='A'||*f=='a')) env_force = (*f=='s'||*f=='S') ? 'S':'A';
   char efetivo = g_cli_modo ? g_cli_modo : (env_force ? env_force : g_cfg.modo);
   g_mode_daemon = (efetivo=='S');
 
-  /* Inicia log conforme MODO efetivo */
-  init_daily_log();
-  Wellcome();
+  printf("[MAIN] Iniciando srvSMS (MODO=%c) - device=%s baud=%d\n", efetivo, device, baud);
+  if (g_mode_daemon) printf("[MAIN] Rodando silencioso (log em %s)\n", LOG_DIR);
 
-  /* Carrega/override DB */
-  apply_db_from_cfg(&g_cfg);
-  if (!*localdb || !*userdb || !*aliasdb) {
-    fprintf(stderr,"Config de banco incompleta. Defina LOCALDB/USERDB/ALIASDB em %s ou via variáveis de ambiente SMS_*\n", CFG_PATH);
+  /* Setup completo (fail-fast) */
+  if (Setup(baud) != 0) {
+    fprintf(stderr, "[MAIN] Encerrando: Setup falhou (não inicia Loop).\n");
+    if (fd >= 0) close(fd);
+    Closecon();
     return EXIT_FAILURE;
   }
 
-  printf("Abrindo conexao com Banco de dados...\n");
-  if (Mysqlcon()==-1) { fprintf(stderr,"Nao é possivel conectar ao banco de dados\n"); return EXIT_FAILURE; }
+  /* Loop de atendimento */
+  Loop();
 
-  /* Charset consistente */
-  ExecQuery("SET NAMES utf8mb4");
-  ExecQuery("SET CHARACTER SET utf8mb4");
-
-  printf("Inicializando Device %s @ %d...\n", device, baud);
-  fd=serialport_init(device, baud);
-  if (fd==-1) { fprintf(stderr,"Erro ao abrir porta serial\n"); Closecon(); return EXIT_FAILURE; }
-
-  printf("Inicializando Modem...\n");
-  if (InicializaModem()!=0) {
-    fprintf(stderr,"Falha ao iniciar: algum comando AT inicial não retornou OK.\n");
-    Closecon(); close(fd); return EXIT_FAILURE;
-  }
-
-  /* DEBUG/status de rede + SMSC */
-  serialport_clear(fd); serialport_write(fd,"AT+CPIN?\r");
-  serialport_read_cmd(fd, g_tmpbuf, SHORT_TIMEOUT_MS); printf("[DBG] CPIN?:\n%s\n", g_tmpbuf);
-
-  serialport_clear(fd); serialport_write(fd,"AT+CREG?\r");
-  serialport_read_cmd(fd, g_tmpbuf, SHORT_TIMEOUT_MS); printf("[DBG] CREG?:\n%s\n", g_tmpbuf);
-
-  serialport_clear(fd); serialport_write(fd,"AT+CSQ\r");
-  serialport_read_cmd(fd, g_tmpbuf, SHORT_TIMEOUT_MS); printf("[DBG] CSQ:\n%s\n", g_tmpbuf);
-
-  printf("Verificando SMSC...\n");
-  if (EnsureSMSC() != 0) {
-    fprintf(stderr, "SMSC não configurado/indisponível; isso pode causar erros de envio (+CMS 302/500).\n");
-  }
-
-  printf("Iniciando Serviço de Monitoramento de Solicitações. (MODO=%c)\n", efetivo);
-  if (g_mode_daemon) printf("Rodando silencioso (apenas log em %s)\n", LOG_DIR);
-  else               printf("Exibindo logs na tela e gravando em %s\n", LOG_DIR);
-
-  while (1) {
-    reload_cfg_if_changed();
-    maybe_rotate_daily_log();
-
-    if (!now_in_window(&g_cfg)) { msleep(10000); continue; }
-
-    int n=BuscaJobs();
-    if (n<=0) msleep(1000); else msleep(500);
-    serialport_clear(fd);
-  }
-
-  Closecon(); close(fd);
+  /* nunca chega aqui */
+  Closecon();
+  if (fd>=0) close(fd);
   return EXIT_SUCCESS;
 }

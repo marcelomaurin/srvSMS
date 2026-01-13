@@ -78,7 +78,7 @@
     </div>
     <div class="col-sm-4">
       <label>Busca</label>
-      <input type="text" class="form-control" ng-model="f.q" placeholder="Telefone ou Nº Hygia">
+      <input type="text" class="form-control" ng-model="f.q" placeholder="Telefone ou Nº">
     </div>
     <div class="col-sm-2">
       <label>&nbsp;</label>
@@ -98,7 +98,7 @@
           <th class="sortable" ng-click="sortBy('id')">ID</th>
           <th class="sortable" ng-click="sortBy('id_lote')">Lote</th>
           <th class="sortable" ng-click="sortBy('numero_telefone')">Telefone</th>
-          <th class="sortable" ng-click="sortBy('nro_hygia')">Nº Hygia</th>
+          <th class="sortable" ng-click="sortBy('nro')">Nº</th>
           <th class="hidden-xs">Cadastro</th>
           <th style="width:170px;">Ações</th>
         </tr>
@@ -110,7 +110,7 @@
             <a ng-href="lote_cad.php?id={{r.id_lote}}" title="Abrir lote">{{r.id_lote}}</a>
           </td>
           <td class="nowrap">{{r.numero_telefone}}</td>
-          <td class="nowrap">{{r.nro_hygia}}</td>
+          <td class="nowrap">{{r.nro}}</td>
           <td class="hidden-xs nowrap">{{r.dtcad | dateTimeBR}}</td>
           <td>
             <div class="btn-group">
@@ -273,7 +273,7 @@
       var q = ($scope.f.q||'').toLowerCase();
       if(q){
         var hit = (row.numero_telefone||'').toLowerCase().indexOf(q) !== -1 ||
-                  (''+(row.nro_hygia||'')).toLowerCase().indexOf(q) !== -1;
+                  (''+(row.nro||'')).toLowerCase().indexOf(q) !== -1;
         if(!hit) return false;
       }
       return true;
@@ -299,7 +299,7 @@
 
     $scope.confirmDelete = function(row){
       if(!row || !row.id) return;
-      if(confirm('Excluir este telefone do lote?\nTelefone: ' + (row.numero_telefone||'') + '\nHygia: ' + (row.nro_hygia||'') )){
+      if(confirm('Excluir este telefone do lote?\nTelefone: ' + (row.numero_telefone||'') + '\nNro: ' + (row.nro||'') )){
         $http.post('/ws/telefone_lote/telefone_lote_delete.php', { id: row.id }, { headers: {'Content-Type':'application/json'} })
           .then(function(){
             $scope.rows = $scope.rows.filter(function(x){ return x.id !== row.id; });

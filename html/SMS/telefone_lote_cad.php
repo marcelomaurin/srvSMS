@@ -72,7 +72,7 @@
         <input type="file" name="arquivo" id="arquivo" class="form-control" accept=".csv,text/csv" required>
         <p class="help-text">
           Delimitador: <code>;</code><br>
-          Mapeamento: <code>NUMPAC → nro_hygia</code>, <code>FONE_DDD + FONE → numero_telefone</code>.
+          Mapeamento: <code>NUMPAC → nro</code>, <code>FONE_DDD + FONE → numero_telefone</code>.
         </p>
         <div class="checkbox">
           <label>
@@ -96,7 +96,7 @@
   </form>
 
   <div class="alert alert-info">
-    <strong>Destino:</strong> <code>telefone_lote(id, id_lote, numero_telefone, nro_hygia, dtcad)</code>.<br>
+    <strong>Destino:</strong> <code>telefone_lote(id, id_lote, numero_telefone, nro, dtcad)</code>.<br>
     <strong>Regra:</strong> lote só é salvo se o CSV tiver ao menos 1 linha válida (garantido no backend).
   </div>
 </div>
